@@ -15,6 +15,8 @@ def test_load_settings_defaults_to_local_sqlite(tmp_path, monkeypatch):
 
 def test_load_settings_reads_env_local(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("GRAPH_RAG_BACKEND", raising=False)
+    monkeypatch.delenv("LOG_LEVEL", raising=False)
     Path(".env.local").write_text("GRAPH_RAG_BACKEND=memory\nLOG_LEVEL=DEBUG\n")
     settings = load_settings()
     assert settings.backend == "memory"

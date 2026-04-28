@@ -4,9 +4,11 @@ Library-first bootstrap repository for the family fact-store extraction roadmap.
 
 ## Local bootstrap commands
 
+```bash
 uv sync
 .venv/bin/pytest -q
-python -m graph_rag check
+.venv/bin/python -m graph_rag check
+```
 
 ## Local backends
 

@@ -2,9 +2,9 @@ name: Tests
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, master]
   push:
-    branches: [main]
+    branches: [main, master]
 
 jobs:
   test:
@@ -17,3 +17,4 @@ jobs:
           python-version: "3.12"
       - run: uv sync --frozen
       - run: .venv/bin/pytest -q
+      - run: .venv/bin/python -m graph_rag check

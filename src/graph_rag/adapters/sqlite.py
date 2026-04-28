@@ -100,13 +100,13 @@ class SQLiteFactStore:
         return None if row is None else self._row_to_record(row)
 
     def _search_facts_sync(self, query: SearchQuery) -> list[FactRecord]:
-        like_value = f"%{query.text.lower()}%"
+        like_value = f"%{self._escape_like(query.text.lower())}%"
         with self._connect() as connection:
             rows = connection.execute(
                 """
                 SELECT * FROM facts
                 WHERE deleted = 0
-                  AND lower(body) LIKE ?
+                  AND lower(body) LIKE ? ESCAPE '\\'
                   AND (? IS NULL OR subject = ?)
                 ORDER BY created_at DESC, fact_id ASC
                 LIMIT ?
@@ -114,6 +114,9 @@ class SQLiteFactStore:
                 (like_value, query.subject, query.subject, query.limit),
             ).fetchall()
         return [self._row_to_record(row) for row in rows]
+
+    def _escape_like(self, value: str) -> str:
+        return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
     def _export_markdown_sync(self) -> list[MarkdownDocument]:
         with self._connect() as connection:

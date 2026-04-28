@@ -56,6 +56,25 @@ async def test_sqlite_duplicate_create_raises_conflict(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_sqlite_search_treats_percent_as_literal(tmp_path):
+    store = SQLiteFactStore(tmp_path / "graph_rag.sqlite3")
+    await store.create_fact(_record("fact-001", "child1 confidence is 100%", "child1", "2026-04-01T09:00:00+00:00"))
+    await store.create_fact(
+        _record("fact-002", "child1 confidence is 100 percent", "child1", "2026-04-02T09:00:00+00:00")
+    )
+    results = await store.search_facts(SearchQuery(text="100%", subject="child1", limit=10))
+    assert [item.fact_id for item in results] == ["fact-001"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [0, 51])
+async def test_sqlite_rejects_invalid_limit(tmp_path, limit):
+    store = SQLiteFactStore(tmp_path / "graph_rag.sqlite3")
+    with pytest.raises(ValueError, match="limit"):
+        await store.search_facts(SearchQuery(text="likes", subject="child1", limit=limit))
+
+
+@pytest.mark.asyncio
 async def test_sqlite_uses_asyncio_to_thread(monkeypatch, tmp_path):
     calls: list[str] = []
     original_to_thread = __import__("asyncio").to_thread
@@ -68,4 +87,6 @@ async def test_sqlite_uses_asyncio_to_thread(monkeypatch, tmp_path):
     store = SQLiteFactStore(tmp_path / "graph_rag.sqlite3")
     await store.create_fact(_record("fact-001", "child1 likes blueberries", "child1", "2026-04-01T09:00:00+00:00"))
     await store.search_facts(SearchQuery(text="likes", subject="child1", limit=10))
-    assert calls
+    assert "_ensure_schema_sync" in calls
+    assert "_create_fact_sync" in calls
+    assert "_search_facts_sync" in calls
