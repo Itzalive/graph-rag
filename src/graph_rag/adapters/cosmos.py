@@ -1,0 +1,186 @@
+from __future__ import annotations
+
+import asyncio
+from datetime import UTC, datetime
+from typing import Any
+
+from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest
+
+
+class CosmosFactBackend:
+    """Cosmos DB-backed FactBackend.
+
+    Constructor injection: pass a pre-built ``ContainerProxy`` or supply
+    ``cosmos_url``, ``credential``, and ``database_name`` to build one lazily.
+    The container name is always ``"memory"`` (the shared assistant container).
+    """
+
+    def __init__(
+        self,
+        container=None,
+        *,
+        cosmos_url: str | None = None,
+        credential=None,
+        database_name: str | None = None,
+        family_id: str,
+    ) -> None:
+        if container is not None:
+            self._container = container
+        elif cosmos_url is not None and credential is not None and database_name is not None:
+            from azure.cosmos import CosmosClient  # noqa: PLC0415
+
+            client = CosmosClient(url=cosmos_url, credential=credential)
+            self._container = client.get_database_client(database_name).get_container_client("memory")
+        else:
+            raise ValueError(
+                "Provide either a ContainerProxy or all of: cosmos_url, credential, database_name"
+            )
+        self._family_id = family_id
+
+    # --- FactBackend protocol ---
+
+    async def upsert_fact(self, record: FactRecord) -> None:
+        doc = self._to_document(record)
+        await asyncio.to_thread(self._container.upsert_item, doc)
+
+    async def read_fact(self, fact_id: str) -> FactRecord | None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError  # noqa: PLC0415
+
+        try:
+            doc = await asyncio.to_thread(
+                self._container.read_item,
+                item=fact_id,
+                partition_key=[self._family_id, "shared", "FACTS"],
+            )
+            return self._from_document(doc)
+        except CosmosResourceNotFoundError:
+            return None
+
+    async def list_facts(self, *, include_expired: bool = False) -> list[FactRecord]:
+        filters = ["(NOT IS_DEFINED(c.deleted) OR c.deleted != true)"]
+        params: list[dict[str, Any]] = []
+        if not include_expired:
+            filters.append(
+                "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
+            )
+            params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
+        query = "SELECT * FROM c WHERE " + " AND ".join(filters)
+        results = await asyncio.to_thread(
+            lambda: list(
+                self._container.query_items(
+                    query=query,
+                    parameters=params or None,
+                    partition_key=[self._family_id, "shared", "FACTS"],
+                )
+            )
+        )
+        return [self._from_document(doc) for doc in results]
+
+    async def search_facts(self, request: FactSearchRequest) -> list[FactSearchHit]:
+        if request.limit > 100:
+            raise ValueError("limit must not exceed 100")
+        filters = ["(NOT IS_DEFINED(c.deleted) OR c.deleted != true)"]
+        params: list[dict[str, Any]] = [{"name": "@qv", "value": list(request.query_vector)}]
+        if not request.include_expired:
+            filters.append(
+                "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
+            )
+            params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
+        where_clause = " AND ".join(filters)
+        query = (
+            f"SELECT TOP {request.limit} *, VectorDistance(c.vector_embeddings, @qv, false) AS score "
+            f"FROM c WHERE {where_clause} "
+            f"ORDER BY VectorDistance(c.vector_embeddings, @qv, false)"
+        )
+        results = await asyncio.to_thread(
+            lambda: list(
+                self._container.query_items(
+                    query=query,
+                    parameters=params,
+                    partition_key=[self._family_id, "shared", "FACTS"],
+                )
+            )
+        )
+        exclude = set(request.exclude_ids)
+        known_keys = {
+            "id", "fact", "score", "created_at", "last_updated_at", "source",
+            "subject", "fact_type", "confidence", "valid_until", "family_id",
+            "user_id", "category", "is_shared", "deleted", "deleted_at",
+            "vector_embeddings", "_rid", "_self", "_etag", "_attachments", "_ts",
+        }
+        return [
+            FactSearchHit(
+                fact_id=doc["id"],
+                body=doc["fact"],
+                score=doc.get("score", 0.0),
+                created_at=self._parse_datetime(doc.get("created_at")),
+                updated_at=self._parse_datetime(doc.get("last_updated_at")),
+                source=doc.get("source"),
+                subject=doc.get("subject"),
+                fact_type=doc.get("fact_type"),
+                confidence=doc.get("confidence"),
+                valid_until=self._parse_datetime(doc.get("valid_until")),
+                extras={k: v for k, v in doc.items() if k not in known_keys},
+            )
+            for doc in results
+            if doc["id"] not in exclude
+        ]
+
+    # --- helpers ---
+
+    def _to_document(self, record: FactRecord) -> dict[str, Any]:
+        doc: dict[str, Any] = {
+            "id": record.fact_id,
+            "family_id": self._family_id,
+            "user_id": "shared",
+            "category": "FACTS",
+            "is_shared": True,
+            "fact": record.body,
+            "created_at": record.created_at.isoformat(),
+            "last_updated_at": record.updated_at.isoformat(),
+            "source": record.source,
+            "subject": record.subject,
+            "fact_type": record.fact_type,
+            "confidence": record.confidence,
+            "deleted": record.deleted,
+            "deleted_at": record.deleted_at.isoformat() if record.deleted_at else None,
+            "vector_embeddings": list(record.vector_embeddings) if record.vector_embeddings else None,
+            **record.extras,
+        }
+        if record.valid_until is not None:
+            doc["valid_until"] = record.valid_until.isoformat()
+        return {k: v for k, v in doc.items() if v is not None}
+
+    def _from_document(self, doc: dict[str, Any]) -> FactRecord:
+        known_keys = {
+            "id", "family_id", "user_id", "category", "is_shared",
+            "fact", "created_at", "last_updated_at", "source", "subject",
+            "fact_type", "confidence", "valid_until", "deleted", "deleted_at",
+            "vector_embeddings", "_rid", "_self", "_etag", "_attachments", "_ts",
+        }
+        extras = {k: v for k, v in doc.items() if k not in known_keys}
+        return FactRecord(
+            fact_id=doc["id"],
+            body=doc["fact"],
+            created_at=self._parse_datetime(doc.get("created_at")) or datetime.now(UTC),
+            updated_at=(
+                self._parse_datetime(doc.get("last_updated_at"))
+                or self._parse_datetime(doc.get("created_at"))
+                or datetime.now(UTC)
+            ),
+            source=doc.get("source"),
+            subject=doc.get("subject"),
+            fact_type=doc.get("fact_type"),
+            confidence=doc.get("confidence"),
+            valid_until=self._parse_datetime(doc.get("valid_until")),
+            deleted=bool(doc.get("deleted", False)),
+            deleted_at=self._parse_datetime(doc.get("deleted_at")),
+            vector_embeddings=tuple(doc["vector_embeddings"]) if doc.get("vector_embeddings") else None,
+            extras=extras,
+        )
+
+    @staticmethod
+    def _parse_datetime(value: str | None) -> datetime | None:
+        if value is None:
+            return None
+        return datetime.fromisoformat(value)
