@@ -110,6 +110,7 @@ async def test_search_sql_contains_deleted_filter():
     query: str = container.query_items.call_args[1]["query"]
     assert "c.deleted" in query
     assert "VectorDistance" in query
+    assert "ORDER BY VectorDistance(c.vector_embeddings, @qv, false)" in query
 
 
 async def test_search_sql_contains_exclude_ids_filter():
@@ -124,11 +125,29 @@ async def test_search_sql_contains_exclude_ids_filter():
     assert params["@exclude_ids"] == ["f1", "f2"]
 
 
-async def test_search_score_is_similarity_not_distance():
-    """score field must be similarity (higher = more relevant), not raw VectorDistance."""
+async def test_search_score_preserves_raw_distance():
+    """score field must remain raw VectorDistance so assistant filters keep working."""
     backend, container = _backend()
     container.query_items.return_value = iter([
-        {"id": "f1", "fact": "body", "_dist": 0.1, "created_at": datetime.now(UTC).isoformat()},
+        {
+            "id": "f1",
+            "fact": "body",
+            "score": 0.1,
+            "created_at": datetime.now(UTC).isoformat(),
+            "extra": "kept",
+        },
     ])
     hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
-    assert abs(hits[0].score - 0.9) < 1e-9  # 1.0 - 0.1 distance = 0.9 similarity
+    query: str = container.query_items.call_args[1]["query"]
+    assert "AS score" in query
+    assert abs(hits[0].score - 0.1) < 1e-9
+    assert hits[0].extras == {"extra": "kept"}
+
+
+async def test_search_missing_score_defaults_to_infinite_distance():
+    backend, container = _backend()
+    container.query_items.return_value = iter([
+        {"id": "f1", "fact": "body", "created_at": datetime.now(UTC).isoformat()},
+    ])
+    hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
+    assert hits[0].score == float("inf")

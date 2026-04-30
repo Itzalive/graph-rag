@@ -91,7 +91,7 @@ class CosmosFactBackend:
             params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
         where_clause = " AND ".join(filters)
         query = (
-            f"SELECT TOP {request.limit} *, VectorDistance(c.vector_embeddings, @qv, false) AS _dist "
+            f"SELECT TOP {request.limit} *, VectorDistance(c.vector_embeddings, @qv, false) AS score "
             f"FROM c WHERE {where_clause} "
             f"ORDER BY VectorDistance(c.vector_embeddings, @qv, false)"
         )
@@ -105,7 +105,7 @@ class CosmosFactBackend:
             )
         )
         known_keys = {
-            "id", "fact", "_dist", "created_at", "last_updated_at", "source",
+            "id", "fact", "score", "created_at", "last_updated_at", "source",
             "subject", "fact_type", "confidence", "valid_until", "family_id",
             "user_id", "category", "is_shared", "deleted", "deleted_at",
             "vector_embeddings", "_rid", "_self", "_etag", "_attachments", "_ts",
@@ -114,7 +114,7 @@ class CosmosFactBackend:
             FactSearchHit(
                 fact_id=doc["id"],
                 body=doc["fact"],
-                score=1.0 - doc.get("_dist", 0.0),  # convert distance to similarity (higher = more relevant)
+                score=doc.get("score", float("inf")),
                 created_at=self._parse_datetime(doc.get("created_at")),
                 updated_at=self._parse_datetime(doc.get("last_updated_at")),
                 source=doc.get("source"),

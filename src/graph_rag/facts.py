@@ -39,7 +39,7 @@ class FactSearchRequest:
 class FactSearchHit:
     fact_id: str
     body: str
-    score: float
+    score: float  # Cosine distance from vector search; lower is better.
     created_at: datetime | None = None
     updated_at: datetime | None = None
     source: str | None = None
@@ -60,6 +60,8 @@ class FactBackend(Protocol):
 
 def cosine_distance(a: tuple[float, ...], b: tuple[float, ...]) -> float:
     """Returns cosine distance in [0, 2]. Lower = more similar."""
+    if len(a) != len(b):
+        raise ValueError("vectors must have the same dimensions")
     dot = sum(x * y for x, y in zip(a, b))
     mag_a = math.sqrt(sum(x * x for x in a))
     mag_b = math.sqrt(sum(x * x for x in b))

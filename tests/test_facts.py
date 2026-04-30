@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
-from graph_rag.facts import FactRecord, FactSearchRequest
+from graph_rag.facts import FactRecord, FactSearchRequest, cosine_distance
 
 
 def _record(
@@ -105,7 +105,9 @@ async def test_search_facts_returns_closest_vector_first():
         FactSearchRequest(query_vector=(1.0, 0.0), limit=10)
     )
     assert [h.fact_id for h in hits] == ["near", "far"]
-    assert hits[0].score > hits[1].score
+    assert hits[0].score < hits[1].score
+    assert hits[0].score == pytest.approx(0.0)
+    assert hits[1].score == pytest.approx(1.0)
 
 
 async def test_search_facts_excludes_deleted():
@@ -131,3 +133,8 @@ async def test_search_facts_skips_records_without_embeddings():
     await backend.upsert_fact(_record("vec", "has vector", vector=(1.0, 0.0)))
     hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=10))
     assert [h.fact_id for h in hits] == ["vec"]
+
+
+def test_cosine_distance_rejects_mismatched_dimensions():
+    with pytest.raises(ValueError, match="dimensions"):
+        cosine_distance((1.0, 0.0), (1.0,))

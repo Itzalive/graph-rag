@@ -50,7 +50,7 @@ class InMemoryFactBackend:
             FactSearchHit(
                 fact_id=r.fact_id,
                 body=r.body,
-                score=1.0 - dist,
+                score=dist,
                 created_at=r.created_at,
                 updated_at=r.updated_at,
                 source=r.source,
