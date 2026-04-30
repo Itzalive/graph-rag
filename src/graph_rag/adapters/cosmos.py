@@ -81,6 +81,9 @@ class CosmosFactBackend:
             raise ValueError("limit must not exceed 100")
         filters = ["(NOT IS_DEFINED(c.deleted) OR c.deleted != true)"]
         params: list[dict[str, Any]] = [{"name": "@qv", "value": list(request.query_vector)}]
+        if request.exclude_ids:
+            filters.append("ARRAY_CONTAINS(@exclude_ids, c.id) = false")
+            params.append({"name": "@exclude_ids", "value": list(request.exclude_ids)})
         if not request.include_expired:
             filters.append(
                 "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
@@ -88,7 +91,7 @@ class CosmosFactBackend:
             params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
         where_clause = " AND ".join(filters)
         query = (
-            f"SELECT TOP {request.limit} *, VectorDistance(c.vector_embeddings, @qv, false) AS score "
+            f"SELECT TOP {request.limit} *, VectorDistance(c.vector_embeddings, @qv, false) AS _dist "
             f"FROM c WHERE {where_clause} "
             f"ORDER BY VectorDistance(c.vector_embeddings, @qv, false)"
         )
@@ -101,9 +104,8 @@ class CosmosFactBackend:
                 )
             )
         )
-        exclude = set(request.exclude_ids)
         known_keys = {
-            "id", "fact", "score", "created_at", "last_updated_at", "source",
+            "id", "fact", "_dist", "created_at", "last_updated_at", "source",
             "subject", "fact_type", "confidence", "valid_until", "family_id",
             "user_id", "category", "is_shared", "deleted", "deleted_at",
             "vector_embeddings", "_rid", "_self", "_etag", "_attachments", "_ts",
@@ -112,7 +114,7 @@ class CosmosFactBackend:
             FactSearchHit(
                 fact_id=doc["id"],
                 body=doc["fact"],
-                score=doc.get("score", 0.0),
+                score=1.0 - doc.get("_dist", 0.0),  # convert distance to similarity (higher = more relevant)
                 created_at=self._parse_datetime(doc.get("created_at")),
                 updated_at=self._parse_datetime(doc.get("last_updated_at")),
                 source=doc.get("source"),
@@ -123,7 +125,6 @@ class CosmosFactBackend:
                 extras={k: v for k, v in doc.items() if k not in known_keys},
             )
             for doc in results
-            if doc["id"] not in exclude
         ]
 
     # --- helpers ---

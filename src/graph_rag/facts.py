@@ -30,6 +30,10 @@ class FactSearchRequest:
     exclude_ids: tuple[str, ...] = ()
     include_expired: bool = False
 
+    def __post_init__(self) -> None:
+        if self.limit <= 0:
+            raise ValueError("limit must be positive")
+
 
 @dataclass(frozen=True)
 class FactSearchHit:

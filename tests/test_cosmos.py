@@ -110,3 +110,25 @@ async def test_search_sql_contains_deleted_filter():
     query: str = container.query_items.call_args[1]["query"]
     assert "c.deleted" in query
     assert "VectorDistance" in query
+
+
+async def test_search_sql_contains_exclude_ids_filter():
+    backend, container = _backend()
+    container.query_items.return_value = iter([])
+    await backend.search_facts(
+        FactSearchRequest(query_vector=(1.0, 0.0), limit=5, exclude_ids=("f1", "f2"))
+    )
+    query: str = container.query_items.call_args[1]["query"]
+    params = {p["name"]: p["value"] for p in container.query_items.call_args[1]["parameters"]}
+    assert "ARRAY_CONTAINS(@exclude_ids, c.id)" in query
+    assert params["@exclude_ids"] == ["f1", "f2"]
+
+
+async def test_search_score_is_similarity_not_distance():
+    """score field must be similarity (higher = more relevant), not raw VectorDistance."""
+    backend, container = _backend()
+    container.query_items.return_value = iter([
+        {"id": "f1", "fact": "body", "_dist": 0.1, "created_at": datetime.now(UTC).isoformat()},
+    ])
+    hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
+    assert abs(hits[0].score - 0.9) < 1e-9  # 1.0 - 0.1 distance = 0.9 similarity

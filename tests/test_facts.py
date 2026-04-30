@@ -86,6 +86,11 @@ async def test_list_facts_does_not_include_deleted_even_with_include_expired():
     assert results == []
 
 
+def test_search_request_rejects_non_positive_limit():
+    with pytest.raises(ValueError, match="positive"):
+        FactSearchRequest(query_vector=(0.1, 0.2), limit=0)
+
+
 async def test_search_facts_rejects_limit_over_100():
     backend = InMemoryFactBackend()
     with pytest.raises(ValueError, match="100"):
