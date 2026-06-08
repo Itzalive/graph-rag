@@ -91,11 +91,11 @@ class CosmosFactBackend:
             params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
         where_clause = " AND ".join(filters)
         query = (
-            f"SELECT TOP {request.limit} *, VectorDistance(c.vector_embeddings, @qv, false) AS score "
+            f"SELECT TOP {request.limit} c, VectorDistance(c.vector_embeddings, @qv, false) AS score "
             f"FROM c WHERE {where_clause} "
             f"ORDER BY VectorDistance(c.vector_embeddings, @qv, false)"
         )
-        results = await asyncio.to_thread(
+        raw_results = await asyncio.to_thread(
             lambda: list(
                 self._container.query_items(
                     query=query,
@@ -104,6 +104,7 @@ class CosmosFactBackend:
                 )
             )
         )
+        results = [{**r["c"], "score": r.get("score", float("inf"))} for r in raw_results]
         known_keys = {
             "id", "fact", "score", "created_at", "last_updated_at", "source",
             "subject", "fact_type", "confidence", "valid_until", "family_id",
