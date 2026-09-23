@@ -7,6 +7,15 @@ from typing import Any
 from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest
 
 
+# Every fact field a search hit can use, including the extras seen in production facts (claude-assistant-yh9p).
+_SEARCH_FIELDS = (
+    "id", "fact", "created_at", "last_updated_at", "source", "subject", "fact_type", "confidence", "valid_until",
+    "family_id", "user_id", "category", "is_shared", "deleted", "deleted_at",
+    "extracted_at", "history", "metadata", "updated_at", "user",
+)
+_SEARCH_SELECT = ", ".join(f"c.{field}" for field in _SEARCH_FIELDS)
+
+
 class CosmosFactBackend:
     """Cosmos DB-backed FactBackend.
 
@@ -90,8 +99,10 @@ class CosmosFactBackend:
             )
             params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
         where_clause = " AND ".join(filters)
+        # Named fields, never `c`: each vector_embeddings is ~22 KB of JSON that the hit never uses. A field that is not
+        # listed in _SEARCH_FIELDS does not reach FactSearchHit.extras; add it there when a new fact field is introduced.
         query = (
-            f"SELECT TOP {request.limit} c, VectorDistance(c.vector_embeddings, @qv, false) AS score "
+            f"SELECT TOP {request.limit} {_SEARCH_SELECT}, VectorDistance(c.vector_embeddings, @qv, false) AS score "
             f"FROM c WHERE {where_clause} "
             f"ORDER BY VectorDistance(c.vector_embeddings, @qv, false)"
         )
@@ -104,7 +115,7 @@ class CosmosFactBackend:
                 )
             )
         )
-        results = [{**r["c"], "score": r.get("score", float("inf"))} for r in raw_results]
+        results = raw_results
         known_keys = {
             "id", "fact", "score", "created_at", "last_updated_at", "source",
             "subject", "fact_type", "confidence", "valid_until", "family_id",

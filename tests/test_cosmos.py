@@ -151,3 +151,17 @@ async def test_search_missing_score_defaults_to_infinite_distance():
     ])
     hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
     assert hits[0].score == float("inf")
+
+
+async def test_search_never_selects_the_embedding_vector():
+    """Each vector is ~22 KB of JSON: a top-20 search must not download 20 of them only to drop them (claude-assistant-yh9p)."""
+    backend, container = _backend()
+    container.query_items.return_value = iter([])
+    await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=20))
+    query: str = container.query_items.call_args[1]["query"]
+    select_list = query.split(" FROM ", 1)[0].replace("VectorDistance(c.vector_embeddings, @qv, false) AS score", "")
+    assert not select_list.startswith("SELECT TOP 20 c,")   # the whole document
+    assert "vector_embeddings" not in select_list          # only the score expression may read the vector
+    for field in ("c.id", "c.fact", "c.created_at", "c.last_updated_at", "c.source", "c.subject", "c.fact_type",
+                  "c.confidence", "c.valid_until", "c.extracted_at", "c.history", "c.metadata", "c.updated_at", "c.user"):
+        assert field in select_list, field
