@@ -44,6 +44,36 @@ def test_constructor_with_container_does_not_import_cosmos():
     assert backend is not None
 
 
+def test_constructing_from_a_url_builds_no_client():
+    # claude-assistant-5si8: the CosmosClient constructor fetches the account over the network; not on the event loop.
+    with patch("azure.cosmos.CosmosClient") as client_cls:
+        CosmosFactBackend(cosmos_url="https://x.documents.azure.com", credential=object(), database_name="db", family_id="f")
+    client_cls.assert_not_called()
+
+
+async def test_the_first_operation_builds_one_client_in_a_worker_thread():
+    import asyncio
+    import threading
+    import time
+
+    on_main = []
+
+    def build(**kwargs):
+        on_main.append(threading.current_thread() is threading.main_thread())
+        time.sleep(0.05)   # the account fetch: the other reads arrive while it runs
+        client = MagicMock()
+        client.get_database_client.return_value.get_container_client.return_value.read_item.return_value = {}
+        return client
+
+    with patch("azure.cosmos.CosmosClient", side_effect=build) as client_cls:
+        backend = CosmosFactBackend(cosmos_url="https://x.documents.azure.com", credential=object(), database_name="db",
+                                    family_id="f")
+        with patch.object(CosmosFactBackend, "_from_document", return_value=None):
+            await asyncio.gather(*(backend.read_fact(str(i)) for i in range(3)))
+    assert on_main == [False]
+    assert client_cls.call_count == 1
+
+
 # --- upsert ---
 
 

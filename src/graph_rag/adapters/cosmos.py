@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC, datetime
 from typing import Any
 
@@ -33,33 +34,48 @@ class CosmosFactBackend:
         database_name: str | None = None,
         family_id: str,
     ) -> None:
-        if container is not None:
-            self._container = container
-        elif cosmos_url is not None and credential is not None and database_name is not None:
-            from azure.cosmos import CosmosClient  # noqa: PLC0415
-
-            client = CosmosClient(url=cosmos_url, credential=credential)
-            self._container = client.get_database_client(database_name).get_container_client("memory")
-        else:
+        if container is None and (cosmos_url is None or credential is None or database_name is None):
             raise ValueError(
                 "Provide either a ContainerProxy or all of: cosmos_url, credential, database_name"
             )
+        # A URL-built client is made on first use, inside the worker thread the operation runs in: the CosmosClient
+        # constructor fetches the database account over the network (claude-assistant-5si8).
+        self._container_client = container
+        self._cosmos_url = cosmos_url
+        self._credential = credential
+        self._database_name = database_name
+        self._build_lock = threading.Lock()
         self._family_id = family_id
+
+    @property
+    def _container(self):
+        """The container, built once on first use. Blocking: read it only inside a worker thread."""
+        if self._container_client is None:
+            with self._build_lock:
+                if self._container_client is None:
+                    from azure.cosmos import CosmosClient  # noqa: PLC0415
+
+                    client = CosmosClient(url=self._cosmos_url, credential=self._credential)
+                    self._container_client = client.get_database_client(self._database_name).get_container_client(
+                        "memory"
+                    )
+        return self._container_client
 
     # --- FactBackend protocol ---
 
     async def upsert_fact(self, record: FactRecord) -> None:
         doc = self._to_document(record)
-        await asyncio.to_thread(self._container.upsert_item, doc)
+        await asyncio.to_thread(lambda: self._container.upsert_item(doc))
 
     async def read_fact(self, fact_id: str) -> FactRecord | None:
         from azure.cosmos.exceptions import CosmosResourceNotFoundError  # noqa: PLC0415
 
         try:
             doc = await asyncio.to_thread(
-                self._container.read_item,
-                item=fact_id,
-                partition_key=[self._family_id, "shared", "FACTS"],
+                lambda: self._container.read_item(
+                    item=fact_id,
+                    partition_key=[self._family_id, "shared", "FACTS"],
+                )
             )
             return self._from_document(doc)
         except CosmosResourceNotFoundError:
