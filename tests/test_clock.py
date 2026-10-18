@@ -2,10 +2,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta, timezone
+from unittest.mock import MagicMock
 
 import pytest
 
+from graph_rag.adapters.cosmos import CosmosFactBackend
+from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.clock import read_clock, utc_now
+from graph_rag.facts import FactRecord, FactSearchRequest
 
 
 def test_utc_now_is_aware_utc():
@@ -27,10 +31,6 @@ def test_read_clock_accepts_an_aware_non_utc_time():
     bst = datetime(2031, 5, 4, 13, 0, tzinfo=timezone(timedelta(hours=1)))
     assert read_clock(lambda: bst) == bst
 
-
-from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
-from graph_rag.clock import utc_now
-from graph_rag.facts import FactRecord, FactSearchRequest
 
 FIXED = datetime(2040, 1, 15, 12, 0, tzinfo=UTC)   # years away from today: only the clock can decide expiry
 
@@ -71,11 +71,6 @@ async def test_in_memory_naive_clock_raises_on_read():
 
 def test_in_memory_default_clock_is_utc_now():
     assert InMemoryFactBackend()._clock is utc_now
-
-
-from unittest.mock import MagicMock
-
-from graph_rag.adapters.cosmos import CosmosFactBackend
 
 
 def _cosmos(clock):
