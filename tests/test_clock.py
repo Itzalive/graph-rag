@@ -71,3 +71,49 @@ async def test_in_memory_naive_clock_raises_on_read():
 
 def test_in_memory_default_clock_is_utc_now():
     assert InMemoryFactBackend()._clock is utc_now
+
+
+from unittest.mock import MagicMock
+
+from graph_rag.adapters.cosmos import CosmosFactBackend
+
+
+def _cosmos(clock):
+    container = MagicMock()
+    container.query_items.return_value = []
+    return CosmosFactBackend(container=container, family_id="f", clock=clock), container
+
+
+def _now_param(container) -> str:
+    params = container.query_items.call_args.kwargs["parameters"]
+    return next(p["value"] for p in params if p["name"] == "@now")
+
+
+async def test_cosmos_list_facts_now_param_is_the_clock():
+    backend, container = _cosmos(lambda: FIXED)
+    await backend.list_facts()
+    assert _now_param(container) == FIXED.isoformat()
+
+
+async def test_cosmos_search_facts_now_param_is_the_clock():
+    backend, container = _cosmos(lambda: FIXED)
+    await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=10))
+    assert _now_param(container) == FIXED.isoformat()
+
+
+async def test_cosmos_naive_clock_raises_unless_expired_facts_are_included():
+    backend, container = _cosmos(lambda: datetime(2040, 1, 15, 12, 0))
+    with pytest.raises(ValueError, match="clock must return an aware datetime"):
+        await backend.list_facts()
+    assert await backend.list_facts(include_expired=True) == []   # reads no clock
+
+
+def test_cosmos_document_without_timestamps_falls_back_to_the_clock():
+    backend, _ = _cosmos(lambda: FIXED)
+    record = backend._from_document({"id": "x", "fact": "no timestamps"})
+    assert record.created_at == FIXED
+    assert record.updated_at == FIXED
+
+
+def test_cosmos_default_clock_is_utc_now():
+    assert CosmosFactBackend(container=MagicMock(), family_id="f")._clock is utc_now

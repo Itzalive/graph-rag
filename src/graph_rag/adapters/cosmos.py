@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
+from graph_rag.clock import Clock, read_clock, utc_now
 from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest
 
 
@@ -33,6 +34,7 @@ class CosmosFactBackend:
         credential=None,
         database_name: str | None = None,
         family_id: str,
+        clock: Clock = utc_now,
     ) -> None:
         if container is None and (cosmos_url is None or credential is None or database_name is None):
             raise ValueError(
@@ -46,6 +48,7 @@ class CosmosFactBackend:
         self._database_name = database_name
         self._build_lock = threading.Lock()
         self._family_id = family_id
+        self._clock = clock
 
     @property
     def _container(self):
@@ -88,7 +91,7 @@ class CosmosFactBackend:
             filters.append(
                 "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
             )
-            params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
+            params.append({"name": "@now", "value": read_clock(self._clock).isoformat()})
         query = "SELECT * FROM c WHERE " + " AND ".join(filters)
         results = await asyncio.to_thread(
             lambda: list(
@@ -113,7 +116,7 @@ class CosmosFactBackend:
             filters.append(
                 "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
             )
-            params.append({"name": "@now", "value": datetime.now(UTC).isoformat()})
+            params.append({"name": "@now", "value": read_clock(self._clock).isoformat()})
         where_clause = " AND ".join(filters)
         # Named fields, never `c`: each vector_embeddings is ~22 KB of JSON that the hit never uses. A field that is not
         # listed in _SEARCH_FIELDS does not reach FactSearchHit.extras; add it there when a new fact field is introduced.
@@ -191,11 +194,11 @@ class CosmosFactBackend:
         return FactRecord(
             fact_id=doc["id"],
             body=doc["fact"],
-            created_at=self._parse_datetime(doc.get("created_at")) or datetime.now(UTC),
+            created_at=self._parse_datetime(doc.get("created_at")) or read_clock(self._clock),
             updated_at=(
                 self._parse_datetime(doc.get("last_updated_at"))
                 or self._parse_datetime(doc.get("created_at"))
-                or datetime.now(UTC)
+                or read_clock(self._clock)
             ),
             source=doc.get("source"),
             subject=doc.get("subject"),
