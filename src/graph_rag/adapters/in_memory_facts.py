@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
-
+from graph_rag.clock import Clock, read_clock, utc_now
 from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest, cosine_distance
 
 
 class InMemoryFactBackend:
     """Deterministic in-memory FactBackend for testing. Uses cosine distance for vector search."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Clock = utc_now) -> None:
         self._facts: dict[str, FactRecord] = {}
+        self._clock = clock
 
     async def upsert_fact(self, record: FactRecord) -> None:
         self._facts[record.fact_id] = record
@@ -18,7 +18,7 @@ class InMemoryFactBackend:
         return self._facts.get(fact_id)
 
     async def list_facts(self, *, include_expired: bool = False) -> list[FactRecord]:
-        now = datetime.now(UTC)
+        now = read_clock(self._clock)
         result = []
         for record in self._facts.values():
             if record.deleted:
@@ -31,7 +31,7 @@ class InMemoryFactBackend:
     async def search_facts(self, request: FactSearchRequest) -> list[FactSearchHit]:
         if request.limit > 100:
             raise ValueError("limit must not exceed 100")
-        now = datetime.now(UTC)
+        now = read_clock(self._clock)
         exclude = set(request.exclude_ids)
         scored: list[tuple[float, FactRecord]] = []
         for record in self._facts.values():
