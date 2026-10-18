@@ -19,12 +19,14 @@ uv sync
 
 `graph_rag.facts` defines the `FactBackend` protocol (`upsert_fact`, `read_fact`, `list_facts`, `search_facts`) and its
 records: `FactRecord` (a stored fact), `FactSearchRequest` (a query vector, a limit of at most 100, ids to exclude, and
-whether to include expired facts) and `FactSearchHit` (a fact with its score). Two adapters implement it:
+whether to include expired facts) and `FactSearchHit` (a fact with its score, a cosine distance: 0 is identical, lower is closer; hits come closest
+first). Two adapters implement it:
 
 - `graph_rag.adapters.in_memory_facts.InMemoryFactBackend`: exact cosine search over facts held in memory, for tests and
   evals.
 - `graph_rag.adapters.cosmos.CosmosFactBackend`: the Azure Cosmos DB `memory` container, one family per backend
-  (`family_id`), vector search through `VectorDistance`.
+  (`family_id`), vector search through `VectorDistance`. With the cosine function Cosmos returns a similarity (1 is
+  identical), so the adapter reports 1 minus it.
 
 ### The clock
 

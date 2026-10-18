@@ -134,6 +134,8 @@ class CosmosFactBackend:
                 )
             )
         )
+        # With the cosine distance function VectorDistance returns a similarity (1 = identical) and ORDER BY puts the most
+        # similar first: 1 - similarity is the FactSearchHit cosine distance, already in ascending order.
         results = raw_results
         known_keys = {
             "id", "fact", "score", "created_at", "last_updated_at", "source",
@@ -145,7 +147,7 @@ class CosmosFactBackend:
             FactSearchHit(
                 fact_id=doc["id"],
                 body=doc["fact"],
-                score=doc.get("score", float("inf")),
+                score=1.0 - doc["score"] if "score" in doc else float("inf"),
                 created_at=self._parse_datetime(doc.get("created_at")),
                 updated_at=self._parse_datetime(doc.get("last_updated_at")),
                 source=doc.get("source"),

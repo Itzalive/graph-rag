@@ -155,22 +155,19 @@ async def test_search_sql_contains_exclude_ids_filter():
     assert params["@exclude_ids"] == ["f1", "f2"]
 
 
-async def test_search_score_preserves_raw_distance():
-    """score field must remain raw VectorDistance so assistant filters keep working."""
+async def test_search_score_is_cosine_distance_from_the_similarity_cosmos_returns():
+    """Cosmos VectorDistance with the cosine function returns a similarity (1 = identical), most similar first."""
     backend, container = _backend()
     container.query_items.return_value = iter([
-        {
-            "id": "f1",
-            "fact": "body",
-            "score": 0.1,
-            "created_at": datetime.now(UTC).isoformat(),
-            "extra": "kept",
-        },
+        {"id": "f1", "fact": "close", "score": 0.9, "created_at": datetime.now(UTC).isoformat(), "extra": "kept"},
+        {"id": "f2", "fact": "far", "score": 0.05, "created_at": datetime.now(UTC).isoformat()},
     ])
     hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
     query: str = container.query_items.call_args[1]["query"]
     assert "AS score" in query
-    assert abs(hits[0].score - 0.1) < 1e-9
+    assert [hit.fact_id for hit in hits] == ["f1", "f2"]
+    assert hits[0].score == pytest.approx(0.1)
+    assert hits[1].score == pytest.approx(0.95)
     assert hits[0].extras == {"extra": "kept"}
 
 
