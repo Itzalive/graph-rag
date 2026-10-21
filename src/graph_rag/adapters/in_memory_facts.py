@@ -56,7 +56,7 @@ class InMemoryFactBackend:
 
     async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
                            entities: Sequence[EntityRecord] = ()) -> None:
-        check_write(record, changes)
+        check_write(record, changes, entities)
         op_id = changes[-1].op_id
         if op_id in self._ops:
             raise AlreadyAppliedError(op_id)

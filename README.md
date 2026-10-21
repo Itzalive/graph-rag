@@ -57,8 +57,10 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
 - `write_change(record, changes, entities=())` writes the memory, its one or two `FactChange` records (two only for an
   old document's first change, the first at `seq 0` carrying its own `after`), an `op-<op_id>` marker and any new
   entities in one transactional batch. The backend sets the last change's `after` to the memory's state. Before sending
-  it runs the write checks W1–W4 (`WriteCheckError(code)`): a dated memory has a `valid_until`; a `valid_until` on any
-  other lifespan has basis `ended`; a validity date has a basis; the memory's `seq` is the last change's.
+  it refuses (`ValueError`) a write Cosmos could not take: more than 100 batch operations, an entity id twice, or a
+  `/`, `\`, `?` or `#` in the fact id or op id. It then runs the write checks W1–W4 (`WriteCheckError(code)`): a dated
+  memory has a `valid_until`; a `valid_until` on any other lifespan has basis `ended`; a validity date has a basis; the
+  memory's `seq` is the last change's.
 - A change record's id is `<fact_id>:<seq>`. A writer reads the memory's `seq` and writes `seq + 1`; if another write
   took it, or created an entity this write creates, `StaleWriteError` is raised: re-read and apply once more.
 - `op_id` names the request. If its marker exists the request was applied before: `AlreadyAppliedError`, which callers

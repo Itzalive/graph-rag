@@ -52,6 +52,7 @@ def test_ended_basis_allows_valid_until_on_any_lifespan():
     ([_change(op_id="")], "op_id"),
     ([_change(after={"id": "m1"})], "after"),
     ([_change(0), _change(1)], "after"),
+    ([_change(op_id="email:a/b")], "must not contain"),
 ])
 def test_malformed_change_lists_are_refused(changes, message):
     record = _rec(seq=changes[-1].seq if changes else 1)

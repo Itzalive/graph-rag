@@ -138,6 +138,8 @@ async def test_two_writers_at_one_seq_one_wins(make_backend):   # AC-M2
     history = await backend.history("m1")
     assert [(c.seq, c.op_id) for c in history if c.seq == 4] == [(4, "writer-a")]
     assert (await backend.read_fact("m1")).body == "Alice swims on Wednesdays"
+    await _write(backend, 5, "writer-b", body="Alice swims on Thursdays")   # the refused request applies once more
+    assert [(c.seq, c.op_id) for c in await backend.history("m1")][-1] == (5, "writer-b")
 
 
 async def test_the_same_request_again_is_already_applied(make_backend):   # AC-M3
@@ -173,6 +175,7 @@ async def test_old_document_first_change_writes_legacy_then_change(make_backend)
     new = replace(old, body="Alice swims on Tuesdays at 17:00", lifespan="fading", seq=1)
     await backend.write_change(new, [legacy, _change(1, "tool-9")])
     assert [(c.seq, c.kind) for c in await backend.history("m1")] == [(0, "legacy"), (1, "changed")]
+    assert (await backend.history("m1"))[0].after == fact_state(old)
     assert (await backend.read_fact("m1")).seq == 1
 
 
@@ -293,11 +296,13 @@ async def test_two_writes_creating_one_entity_one_wins(make_backend):   # AC-M16
     assert await backend.history("m2") == []
 
 
-async def test_cosmos_refuses_a_write_too_big_for_one_batch():   # Cosmos holds at most 100 operations per batch
-    container = FakeContainer()
-    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
-    many = [EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}") for i in range(98)]
-    with pytest.raises(ValueError, match="100"):
+@pytest.mark.parametrize("entities, message", [
+    ([EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}") for i in range(98)], "100"),
+    ([BROWNIES, BROWNIES], "distinct"),
+])
+async def test_a_write_cosmos_would_refuse_is_refused_on_both(make_backend, entities, message):
+    backend = make_backend()
+    with pytest.raises(ValueError, match=message):
         await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-big", kind="created")],
-                                   entities=many)
-    assert container.batches == []
+                                   entities=entities)
+    assert await backend.read_fact("m1") is None

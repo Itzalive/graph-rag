@@ -67,8 +67,15 @@ def check_history_limit(limit: int) -> None:
         raise ValueError(f"limit must be between 1 and {HISTORY_MAX_LIMIT}")
 
 
-def check_write(record: FactRecord, changes: Sequence[FactChange]) -> None:
-    """The library's write checks, run before anything is sent. Raises ValueError for a malformed change list and
+# Cosmos holds at most 100 operations in one transactional batch; a write is the marker, its changes, its new
+# entities and the memory.
+MAX_BATCH_OPERATIONS = 100
+# Characters Cosmos refuses in a document id: the fact id and op id become parts of ids.
+_ID_FORBIDDEN = frozenset("/\\?#")
+
+
+def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Sequence[EntityRecord] = ()) -> None:
+    """The library's write checks, run before anything is sent. Raises ValueError for a malformed write and
     WriteCheckError for a memory that breaks W1–W4."""
     if not 1 <= len(changes) <= 2:
         raise ValueError("a write carries one or two changes")
@@ -81,6 +88,12 @@ def check_write(record: FactRecord, changes: Sequence[FactChange]) -> None:
         raise ValueError("two changes only for an old document's first change, at seq 0")
     if not changes[-1].op_id:
         raise ValueError("the last change must carry an op_id")
+    if _ID_FORBIDDEN & set(record.fact_id + changes[-1].op_id):
+        raise ValueError("fact_id and op_id must not contain /, \\, ? or #")
+    if len({entity.entity_id for entity in entities}) != len(entities):
+        raise ValueError("entity ids must be distinct")
+    if 2 + len(changes) + len(entities) > MAX_BATCH_OPERATIONS:
+        raise ValueError(f"a write may hold at most {MAX_BATCH_OPERATIONS} batch operations")
     if changes[-1].after is not None:
         raise ValueError("the backend sets the last change's after")
     if len(changes) == 2 and changes[0].after is None:

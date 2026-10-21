@@ -46,7 +46,6 @@ CLAUSE_ALIAS = "ARRAY_CONTAINS(c.alias_keys, @alias)"
 CLAUSE_IDENTIFIER = "ARRAY_CONTAINS(c.identifier_keys, @identifier)"
 
 # A transactional batch holds at most 100 operations (Azure Cosmos DB limit).
-_MAX_BATCH_OPERATIONS = 100
 
 
 class CosmosFactBackend:
@@ -166,7 +165,7 @@ class CosmosFactBackend:
         document is replaced whole: pass the vectors to keep."""
         from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
 
-        check_write(record, changes)
+        check_write(record, changes, entities)
         op_id = changes[-1].op_id
         marker = op_marker_id(op_id)
         if await self._read_raw(marker) is not None:
@@ -178,8 +177,6 @@ class CosmosFactBackend:
             *[("create", (self._stamp(entity_to_state(entity)),)) for entity in entities],
             ("upsert", (self._to_document(record),)),
         ]
-        if len(operations) > _MAX_BATCH_OPERATIONS:
-            raise ValueError(f"a write may hold at most {_MAX_BATCH_OPERATIONS} batch operations")
         try:
             await asyncio.to_thread(
                 lambda: self._container.execute_item_batch(batch_operations=operations, partition_key=self._pk)
