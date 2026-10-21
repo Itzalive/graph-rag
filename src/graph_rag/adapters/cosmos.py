@@ -2,11 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from collections.abc import Sequence
+from dataclasses import replace
 from typing import Any
 
 from graph_rag.clock import Clock, read_clock, utc_now
 from graph_rag.facts import (
     SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, fact_state, hit_from_state, record_from_state,
+)
+from graph_rag.record import (
+    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, StaleWriteError, change_from_state, change_to_state,
+    check_history_limit, check_write, op_marker_id,
 )
 
 
@@ -30,6 +36,12 @@ CLAUSE_NOT_PURGED = "(NOT IS_DEFINED(c.purged_at) OR IS_NULL(c.purged_at))"
 CLAUSE_NOT_EXPIRED = "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
 CLAUSE_STARTED = "(NOT IS_DEFINED(c.valid_from) OR IS_NULL(c.valid_from) OR c.valid_from <= @now)"
 CLAUSE_NOT_EXCLUDED = "ARRAY_CONTAINS(@exclude_ids, c.id) = false"
+CLAUSE_CHANGES = "c.doc_type = 'fact_change'"
+CLAUSE_CHANGE_OF_FACT = "c.fact_id = @fact_id"
+CLAUSE_AFTER_SEQ = "c.seq > @after"
+
+# A transactional batch holds at most 100 operations (Azure Cosmos DB limit).
+_MAX_BATCH_OPERATIONS = 100
 
 
 class CosmosFactBackend:
@@ -91,18 +103,8 @@ class CosmosFactBackend:
         await asyncio.to_thread(lambda: self._container.upsert_item(doc))
 
     async def read_fact(self, fact_id: str) -> FactRecord | None:
-        from azure.cosmos.exceptions import CosmosResourceNotFoundError  # noqa: PLC0415
-
-        try:
-            doc = await asyncio.to_thread(
-                lambda: self._container.read_item(
-                    item=fact_id,
-                    partition_key=self._pk,
-                )
-            )
-            return None if "doc_type" in doc else self._from_document(doc)
-        except CosmosResourceNotFoundError:
-            return None
+        doc = await self._read_raw(fact_id)
+        return None if doc is None or "doc_type" in doc else self._from_document(doc)
 
     async def list_facts(self, *, include_expired: bool = False, include_future: bool = False) -> list[FactRecord]:
         filters, params = self._memory_filters(include_expired=include_expired, include_future=include_future)
@@ -148,7 +150,81 @@ class CosmosFactBackend:
         # similar first: 1 - similarity is the FactSearchHit cosine distance, already in ascending order.
         return [hit_from_state(doc, 1.0 - doc["score"] if "score" in doc else float("inf")) for doc in raw_results]
 
+    # --- RecordedFactBackend ---
+
+    async def write_change(self, record: FactRecord, changes: Sequence[FactChange]) -> None:
+        """Write the memory, its change records and the op marker in one transactional batch (spec §2). A request whose
+        marker exists raises AlreadyAppliedError before anything is sent; a create conflict on the marker inside the batch
+        (two copies of one request at once) raises it too; any other create conflict raises StaleWriteError. Any other
+        batch failure is raised unchanged. The memory document is replaced whole: pass the vectors to keep."""
+        from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
+
+        check_write(record, changes)
+        op_id = changes[-1].op_id
+        marker = op_marker_id(op_id)
+        if await self._read_raw(marker) is not None:
+            raise AlreadyAppliedError(op_id)
+        stored = [*changes[:-1], replace(changes[-1], after=fact_state(record))]
+        operations: list[tuple[str, tuple[dict[str, Any]]]] = [
+            ("create", (self._stamp({"id": marker, "doc_type": "fact_op", "op_id": op_id, "fact_id": record.fact_id}),)),
+            *[("create", (self._stamp(change_to_state(change)),)) for change in stored],
+            ("upsert", (self._to_document(record),)),
+        ]
+        if len(operations) > _MAX_BATCH_OPERATIONS:
+            raise ValueError(f"a write may hold at most {_MAX_BATCH_OPERATIONS} batch operations")
+        try:
+            await asyncio.to_thread(
+                lambda: self._container.execute_item_batch(batch_operations=operations, partition_key=self._pk)
+            )
+        except CosmosBatchOperationError as exc:
+            if exc.status_code == 409 and exc.error_index == 0:
+                raise AlreadyAppliedError(op_id) from exc
+            if exc.status_code == 409:
+                raise StaleWriteError(record.fact_id) from exc
+            raise
+
+    async def history(self, fact_id: str, *, after_seq: int = -1,
+                      limit: int = HISTORY_DEFAULT_LIMIT) -> list[FactChange]:
+        check_history_limit(limit)
+        query = (f"SELECT TOP @n * FROM c WHERE {CLAUSE_CHANGES} AND {CLAUSE_CHANGE_OF_FACT} AND {CLAUSE_AFTER_SEQ} "
+                 "ORDER BY c.seq ASC")
+        params = [{"name": "@n", "value": limit}, {"name": "@fact_id", "value": fact_id},
+                  {"name": "@after", "value": after_seq}]
+        rows = await asyncio.to_thread(
+            lambda: list(self._container.query_items(query=query, parameters=params, partition_key=self._pk))
+        )
+        return [change_from_state(row) for row in rows]
+
+    async def set_vectors(self, fact_id: str, vectors: tuple[float, ...], *, expected_seq: int) -> bool:
+        """Fill a memory's vectors only if it still has `expected_seq` and is unchanged since read (etag). Not a change:
+        no change record. A lost race is skipped, never retried."""
+        from azure.core import MatchConditions  # noqa: PLC0415
+        from azure.cosmos.exceptions import CosmosAccessConditionFailedError  # noqa: PLC0415
+
+        doc = await self._read_raw(fact_id)
+        if doc is None or "doc_type" in doc or doc.get("seq", 0) != expected_seq:
+            return False
+        body = {key: value for key, value in doc.items() if key not in SYSTEM_KEYS}
+        body["vector_embeddings"] = list(vectors)
+        try:
+            await asyncio.to_thread(lambda: self._container.replace_item(
+                item=fact_id, body=body, etag=doc["_etag"], match_condition=MatchConditions.IfNotModified))
+        except CosmosAccessConditionFailedError:
+            return False
+        return True
+
     # --- helpers ---
+
+    def _stamp(self, doc: dict[str, Any]) -> dict[str, Any]:
+        return {**doc, "family_id": self._family_id, "user_id": self._scope, "category": "FACTS"}
+
+    async def _read_raw(self, item_id: str) -> dict[str, Any] | None:
+        from azure.cosmos.exceptions import CosmosResourceNotFoundError  # noqa: PLC0415
+
+        try:
+            return await asyncio.to_thread(lambda: self._container.read_item(item=item_id, partition_key=self._pk))
+        except CosmosResourceNotFoundError:
+            return None
 
     def _memory_filters(self, *, include_expired: bool, include_future: bool) -> tuple[list[str], list[dict[str, Any]]]:
         filters = [CLAUSE_MEMORY, CLAUSE_NOT_DELETED, CLAUSE_NOT_FORGOTTEN, CLAUSE_NOT_PURGED]

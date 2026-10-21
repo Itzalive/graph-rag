@@ -40,6 +40,9 @@ _CLAUSES: dict[str, Callable[[dict, dict], bool]] = {
     adapter.CLAUSE_NOT_EXPIRED: lambda d, p: d.get("valid_until") is None or d["valid_until"] > p["@now"],
     adapter.CLAUSE_STARTED: lambda d, p: d.get("valid_from") is None or d["valid_from"] <= p["@now"],
     adapter.CLAUSE_NOT_EXCLUDED: lambda d, p: d["id"] not in p["@exclude_ids"],
+    adapter.CLAUSE_CHANGES: lambda d, p: d.get("doc_type") == "fact_change",
+    adapter.CLAUSE_CHANGE_OF_FACT: lambda d, p: d.get("fact_id") == p["@fact_id"],
+    adapter.CLAUSE_AFTER_SEQ: lambda d, p: d.get("seq", 0) > p["@after"],
 }
 
 

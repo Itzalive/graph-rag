@@ -5,10 +5,12 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from azure.cosmos.exceptions import CosmosBatchOperationError
 
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
-from graph_rag.facts import FactRecord, FactSearchRequest
+from graph_rag.facts import FactRecord, FactSearchRequest, fact_state
+from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, StaleWriteError, WriteCheckError
 from cosmos_fake import FakeContainer  # tests/ is on sys.path (no __init__.py; pytest prepend import mode)
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
@@ -101,3 +103,147 @@ async def test_cosmos_documents_with_a_doc_type_are_never_memories():   # AC-M5 
                            "user_id": "shared", "category": "FACTS", "vector_embeddings": [1.0, 0.0]})
     assert await backend.read_fact("x:1") is None
     assert await _ids(backend, include_expired=True, include_future=True) == ([], [])
+
+
+SRC = ChangeSource("parent_chat", actor="parent1", ref="chat:parent1:2026-10-18T09:00:00+00:00")
+
+
+def _change(seq: int, op: str, *, kind: str = "changed", fact_id: str = "m1", after=None) -> FactChange:
+    return FactChange(fact_id=fact_id, seq=seq, kind=kind, at=NOW, source=SRC, reason="changed in chat", op_id=op,
+                      after=after)
+
+
+async def _write(backend, seq: int, op: str, body: str = "Alice swims on Tuesdays", **fields):
+    record = _rec(body=body, lifespan="fading", seq=seq, **fields)
+    await backend.write_change(record, [_change(seq, op, kind="created" if seq == 1 else "changed")])
+    return record
+
+
+async def test_a_new_memory_has_seq_1_and_one_record(make_backend):   # AC-M1
+    backend = make_backend()
+    record = await _write(backend, 1, "op-a")
+    assert (await backend.read_fact("m1")).seq == 1
+    [change] = await backend.history("m1")
+    assert (change.seq, change.kind, change.source, change.after) == (1, "created", SRC, fact_state(record))
+
+
+async def test_two_writers_at_one_seq_one_wins(make_backend):   # AC-M2
+    backend = make_backend()
+    for seq in (1, 2, 3):
+        await _write(backend, seq, f"op-{seq}")
+    await _write(backend, 4, "writer-a", body="Alice swims on Wednesdays")
+    with pytest.raises(StaleWriteError):
+        await _write(backend, 4, "writer-b", body="Alice swims on Thursdays")
+    history = await backend.history("m1")
+    assert [(c.seq, c.op_id) for c in history if c.seq == 4] == [(4, "writer-a")]
+    assert (await backend.read_fact("m1")).body == "Alice swims on Wednesdays"
+
+
+async def test_the_same_request_again_is_already_applied(make_backend):   # AC-M3
+    backend = make_backend()
+    await _write(backend, 1, "tool-1")
+    with pytest.raises(AlreadyAppliedError):
+        await _write(backend, 2, "tool-1", body="Alice swims on Fridays")
+    assert (await backend.read_fact("m1")).body == "Alice swims on Tuesdays"
+    assert [c.seq for c in await backend.history("m1")] == [1]
+
+
+@pytest.mark.parametrize("fields, code", [
+    (dict(lifespan="dated", seq=1), "W1"),
+    (dict(lifespan="lasting", valid_until=NOW + timedelta(days=1), validity_basis="stated", seq=1), "W2"),
+    (dict(lifespan="dated", valid_from=NOW, valid_until=NOW + timedelta(days=1), seq=1), "W3"),
+    (dict(lifespan="lasting", seq=2), "W4"),
+])
+async def test_a_refused_write_writes_nothing(make_backend, fields, code):   # AC-M4, every rule on both adapters
+    backend = make_backend()
+    with pytest.raises(WriteCheckError) as exc:
+        await backend.write_change(_rec(**fields), [_change(1, "op-w", kind="created")])
+    assert exc.value.code == code
+    assert await backend.read_fact("m1") is None
+    assert await backend.history("m1") == []
+
+
+async def test_old_document_first_change_writes_legacy_then_change(make_backend):   # spec §5
+    backend = make_backend()
+    old = _rec(body="Alice swims on Tuesdays at 17:30")
+    await backend.upsert_fact(old)
+    legacy = FactChange(fact_id="m1", seq=0, kind="legacy", at=NOW, source=ChangeSource("legacy", label="chat"),
+                        reason="known before the record", op_id="tool-9", after=fact_state(old))
+    new = replace(old, body="Alice swims on Tuesdays at 17:00", lifespan="fading", seq=1)
+    await backend.write_change(new, [legacy, _change(1, "tool-9")])
+    assert [(c.seq, c.kind) for c in await backend.history("m1")] == [(0, "legacy"), (1, "changed")]
+    assert (await backend.read_fact("m1")).seq == 1
+
+
+async def test_change_records_are_never_memories(make_backend):   # AC-M5
+    backend = make_backend()
+    await _write(backend, 1, "op-a", vector_embeddings=(1.0, 0.0))
+    assert await backend.read_fact("m1:1") is None
+    assert [r.fact_id for r in await backend.list_facts(include_expired=True, include_future=True)] == ["m1"]
+
+
+async def test_history_is_per_family(make_backend):   # AC-M6
+    await _write(make_backend("fam1"), 1, "op-a")
+    assert await make_backend("fam2").history("m1") == []
+
+
+async def test_history_pages_by_seq(make_backend):   # AC-M18
+    backend = make_backend()
+    for seq in range(1, 151):
+        await _write(backend, seq, f"op-{seq}")
+    first = await backend.history("m1", limit=100)
+    second = await backend.history("m1", after_seq=first[-1].seq, limit=100)
+    assert [c.seq for c in first + second] == list(range(1, 151))
+    assert (len(first), len(second)) == (100, 50)
+
+
+@pytest.mark.parametrize("limit", [0, 501])
+async def test_history_limit_is_bounded(make_backend, limit):
+    with pytest.raises(ValueError, match="limit"):
+        await make_backend().history("m1", limit=limit)
+
+
+async def test_vector_write_back_only_onto_the_seq_it_read(make_backend):   # AC-M3c
+    backend = make_backend()
+    await _write(backend, 1, "op-1")
+    await _write(backend, 2, "op-2", body="Alice swims on Wednesdays")
+    assert await backend.set_vectors("m1", (0.5, 0.5), expected_seq=1) is False
+    record = await backend.read_fact("m1")
+    assert (record.seq, record.vector_embeddings) == (2, None)
+    assert await backend.set_vectors("m1", (0.5, 0.5), expected_seq=2) is True
+    assert (await backend.read_fact("m1")).vector_embeddings == (0.5, 0.5)
+    assert [c.seq for c in await backend.history("m1")] == [1, 2]
+    assert await backend.set_vectors("missing", (0.5, 0.5), expected_seq=0) is False
+
+
+async def test_cosmos_vector_write_back_loses_an_etag_race_silently():   # AC-M3c, Cosmos etag path
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await _write(backend, 1, "op-1")
+    container.before_replace = lambda: container._put(dict(container.docs[("fam1", "shared", "FACTS", "m1")]))
+    assert await backend.set_vectors("m1", (0.5, 0.5), expected_seq=1) is False
+    assert (await backend.read_fact("m1")).vector_embeddings is None
+
+
+async def test_cosmos_marker_conflict_inside_the_batch_is_already_applied():   # AC-M3, two copies racing
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    container.before_batch = lambda: container._put(
+        {"id": "op-tool-1", "doc_type": "fact_op", "family_id": "fam1", "user_id": "shared", "category": "FACTS"})
+    with pytest.raises(AlreadyAppliedError):
+        await _write(backend, 1, "tool-1")
+    assert await backend.read_fact("m1") is None
+
+
+async def test_cosmos_other_batch_failures_are_raised_unchanged():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+
+    def fail():
+        raise CosmosBatchOperationError(error_index=1, headers={}, status_code=413, message="too large",
+                                        operation_responses=[])
+
+    container.execute_item_batch = lambda **kwargs: fail()
+    with pytest.raises(CosmosBatchOperationError) as exc:
+        await _write(backend, 1, "op-1")
+    assert exc.value.status_code == 413
