@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from graph_rag.clock import Clock, read_clock, utc_now
-from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest, cosine_distance, hit_from_record
+from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest, cosine_distance, hit_from_record, is_listed
 
 
 class InMemoryFactBackend:
@@ -17,16 +17,10 @@ class InMemoryFactBackend:
     async def read_fact(self, fact_id: str) -> FactRecord | None:
         return self._facts.get(fact_id)
 
-    async def list_facts(self, *, include_expired: bool = False) -> list[FactRecord]:
+    async def list_facts(self, *, include_expired: bool = False, include_future: bool = False) -> list[FactRecord]:
         now = read_clock(self._clock)
-        result = []
-        for record in self._facts.values():
-            if record.deleted:
-                continue
-            if not include_expired and record.valid_until is not None and record.valid_until <= now:
-                continue
-            result.append(record)
-        return result
+        return [r for r in self._facts.values()
+                if is_listed(r, now, include_expired=include_expired, include_future=include_future)]
 
     async def search_facts(self, request: FactSearchRequest) -> list[FactSearchHit]:
         if request.limit > 100:
@@ -35,11 +29,10 @@ class InMemoryFactBackend:
         exclude = set(request.exclude_ids)
         scored: list[tuple[float, FactRecord]] = []
         for record in self._facts.values():
-            if record.deleted:
-                continue
             if record.fact_id in exclude:
                 continue
-            if not request.include_expired and record.valid_until is not None and record.valid_until <= now:
+            if not is_listed(record, now, include_expired=request.include_expired,
+                             include_future=request.include_future):
                 continue
             if record.vector_embeddings is None:
                 continue

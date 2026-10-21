@@ -96,11 +96,13 @@ async def test_cosmos_search_facts_now_param_is_the_clock():
     assert _now_param(container) == FIXED.isoformat()
 
 
-async def test_cosmos_naive_clock_raises_unless_expired_facts_are_included():
+async def test_cosmos_naive_clock_raises_unless_time_filters_are_widened():
     backend, container = _cosmos(lambda: datetime(2040, 1, 15, 12, 0))
     with pytest.raises(ValueError, match="clock must return an aware datetime"):
         await backend.list_facts()
-    assert await backend.list_facts(include_expired=True) == []   # reads no clock
+    with pytest.raises(ValueError, match="clock must return an aware datetime"):
+        await backend.list_facts(include_expired=True)   # the valid-from filter still reads the clock
+    assert await backend.list_facts(include_expired=True, include_future=True) == []   # reads no clock
 
 
 def test_cosmos_document_without_timestamps_falls_back_to_the_clock():

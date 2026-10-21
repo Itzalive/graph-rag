@@ -241,3 +241,15 @@ def hit_from_record(record: FactRecord, score: float) -> FactSearchHit:
         validity_basis=record.validity_basis, learned_at=record.learned_at, last_changed_at=record.last_changed_at,
         last_confirmed_at=record.last_confirmed_at, entities=record.entities, topics=record.topics, seq=record.seq,
     )
+
+
+def is_listed(record: FactRecord, now: datetime, *, include_expired: bool = False, include_future: bool = False) -> bool:
+    """Whether a memory is returned by list and search: never deleted, forgotten or purged; past its valid-until only
+    with include_expired; before its valid-from only with include_future."""
+    if record.deleted or record.forgotten_at is not None or record.purged_at is not None:
+        return False
+    if not include_expired and record.valid_until is not None and record.valid_until <= now:
+        return False
+    if not include_future and record.valid_from is not None and record.valid_from > now:
+        return False
+    return True

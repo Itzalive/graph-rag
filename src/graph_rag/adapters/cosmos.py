@@ -100,16 +100,12 @@ class CosmosFactBackend:
                     partition_key=self._pk,
                 )
             )
-            return self._from_document(doc)
+            return None if "doc_type" in doc else self._from_document(doc)
         except CosmosResourceNotFoundError:
             return None
 
-    async def list_facts(self, *, include_expired: bool = False) -> list[FactRecord]:
-        filters = [CLAUSE_NOT_DELETED]
-        params: list[dict[str, Any]] = []
-        if not include_expired:
-            filters.append(CLAUSE_NOT_EXPIRED)
-            params.append({"name": "@now", "value": read_clock(self._clock).isoformat()})
+    async def list_facts(self, *, include_expired: bool = False, include_future: bool = False) -> list[FactRecord]:
+        filters, params = self._memory_filters(include_expired=include_expired, include_future=include_future)
         query = "SELECT * FROM c WHERE " + " AND ".join(filters)
         results = await asyncio.to_thread(
             lambda: list(
@@ -125,14 +121,12 @@ class CosmosFactBackend:
     async def search_facts(self, request: FactSearchRequest) -> list[FactSearchHit]:
         if request.limit > 100:
             raise ValueError("limit must not exceed 100")
-        filters = [CLAUSE_NOT_DELETED]
-        params: list[dict[str, Any]] = [{"name": "@qv", "value": list(request.query_vector)}]
+        filters, params = self._memory_filters(include_expired=request.include_expired,
+                                               include_future=request.include_future)
+        params.insert(0, {"name": "@qv", "value": list(request.query_vector)})
         if request.exclude_ids:
             filters.append(CLAUSE_NOT_EXCLUDED)
             params.append({"name": "@exclude_ids", "value": list(request.exclude_ids)})
-        if not request.include_expired:
-            filters.append(CLAUSE_NOT_EXPIRED)
-            params.append({"name": "@now", "value": read_clock(self._clock).isoformat()})
         where_clause = " AND ".join(filters)
         # Named fields, never `c`: each vector_embeddings is ~22 KB of JSON that the hit never uses. A field that is not
         # listed in _SEARCH_FIELDS does not reach FactSearchHit.extras; add it there when a new fact field is introduced.
@@ -155,6 +149,16 @@ class CosmosFactBackend:
         return [hit_from_state(doc, 1.0 - doc["score"] if "score" in doc else float("inf")) for doc in raw_results]
 
     # --- helpers ---
+
+    def _memory_filters(self, *, include_expired: bool, include_future: bool) -> tuple[list[str], list[dict[str, Any]]]:
+        filters = [CLAUSE_MEMORY, CLAUSE_NOT_DELETED, CLAUSE_NOT_FORGOTTEN, CLAUSE_NOT_PURGED]
+        if not include_expired:
+            filters.append(CLAUSE_NOT_EXPIRED)
+        if not include_future:
+            filters.append(CLAUSE_STARTED)
+        params = [] if include_expired and include_future else [
+            {"name": "@now", "value": read_clock(self._clock).isoformat()}]
+        return filters, params
 
     def _to_document(self, record: FactRecord) -> dict[str, Any]:
         doc: dict[str, Any] = {
