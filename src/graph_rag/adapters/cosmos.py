@@ -22,6 +22,15 @@ _SEARCH_FIELDS = (
 )
 _SEARCH_SELECT = ", ".join(f"c.{field}" for field in _SEARCH_FIELDS)
 
+# WHERE clauses for memory reads. tests/cosmos_fake.py interprets each by its exact text: change both together.
+CLAUSE_MEMORY = "NOT IS_DEFINED(c.doc_type)"
+CLAUSE_NOT_DELETED = "(NOT IS_DEFINED(c.deleted) OR c.deleted != true)"
+CLAUSE_NOT_FORGOTTEN = "(NOT IS_DEFINED(c.forgotten_at) OR IS_NULL(c.forgotten_at))"
+CLAUSE_NOT_PURGED = "(NOT IS_DEFINED(c.purged_at) OR IS_NULL(c.purged_at))"
+CLAUSE_NOT_EXPIRED = "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
+CLAUSE_STARTED = "(NOT IS_DEFINED(c.valid_from) OR IS_NULL(c.valid_from) OR c.valid_from <= @now)"
+CLAUSE_NOT_EXCLUDED = "ARRAY_CONTAINS(@exclude_ids, c.id) = false"
+
 
 class CosmosFactBackend:
     """Cosmos DB-backed FactBackend.
@@ -29,6 +38,7 @@ class CosmosFactBackend:
     Constructor injection: pass a pre-built ``ContainerProxy`` or supply
     ``cosmos_url``, ``credential``, and ``database_name`` to build one lazily.
     The container name is always ``"memory"`` (the shared assistant container).
+    One bucket per backend: ``[family_id, scope, "FACTS"]``, ``scope`` ``"shared"`` unless the caller names another.
     """
 
     def __init__(
@@ -39,12 +49,15 @@ class CosmosFactBackend:
         credential=None,
         database_name: str | None = None,
         family_id: str,
+        scope: str = "shared",
         clock: Clock = utc_now,
     ) -> None:
         if container is None and (cosmos_url is None or credential is None or database_name is None):
             raise ValueError(
                 "Provide either a ContainerProxy or all of: cosmos_url, credential, database_name"
             )
+        if not scope:
+            raise ValueError("scope must name a bucket, for example 'shared'")
         # A URL-built client is made on first use, inside the worker thread the operation runs in: the CosmosClient
         # constructor fetches the database account over the network (claude-assistant-5si8).
         self._container_client = container
@@ -53,6 +66,8 @@ class CosmosFactBackend:
         self._database_name = database_name
         self._build_lock = threading.Lock()
         self._family_id = family_id
+        self._scope = scope
+        self._pk = [family_id, scope, "FACTS"]
         self._clock = clock
 
     @property
@@ -82,7 +97,7 @@ class CosmosFactBackend:
             doc = await asyncio.to_thread(
                 lambda: self._container.read_item(
                     item=fact_id,
-                    partition_key=[self._family_id, "shared", "FACTS"],
+                    partition_key=self._pk,
                 )
             )
             return self._from_document(doc)
@@ -90,12 +105,10 @@ class CosmosFactBackend:
             return None
 
     async def list_facts(self, *, include_expired: bool = False) -> list[FactRecord]:
-        filters = ["(NOT IS_DEFINED(c.deleted) OR c.deleted != true)"]
+        filters = [CLAUSE_NOT_DELETED]
         params: list[dict[str, Any]] = []
         if not include_expired:
-            filters.append(
-                "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
-            )
+            filters.append(CLAUSE_NOT_EXPIRED)
             params.append({"name": "@now", "value": read_clock(self._clock).isoformat()})
         query = "SELECT * FROM c WHERE " + " AND ".join(filters)
         results = await asyncio.to_thread(
@@ -103,7 +116,7 @@ class CosmosFactBackend:
                 self._container.query_items(
                     query=query,
                     parameters=params or None,
-                    partition_key=[self._family_id, "shared", "FACTS"],
+                    partition_key=self._pk,
                 )
             )
         )
@@ -112,15 +125,13 @@ class CosmosFactBackend:
     async def search_facts(self, request: FactSearchRequest) -> list[FactSearchHit]:
         if request.limit > 100:
             raise ValueError("limit must not exceed 100")
-        filters = ["(NOT IS_DEFINED(c.deleted) OR c.deleted != true)"]
+        filters = [CLAUSE_NOT_DELETED]
         params: list[dict[str, Any]] = [{"name": "@qv", "value": list(request.query_vector)}]
         if request.exclude_ids:
-            filters.append("ARRAY_CONTAINS(@exclude_ids, c.id) = false")
+            filters.append(CLAUSE_NOT_EXCLUDED)
             params.append({"name": "@exclude_ids", "value": list(request.exclude_ids)})
         if not request.include_expired:
-            filters.append(
-                "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
-            )
+            filters.append(CLAUSE_NOT_EXPIRED)
             params.append({"name": "@now", "value": read_clock(self._clock).isoformat()})
         where_clause = " AND ".join(filters)
         # Named fields, never `c`: each vector_embeddings is ~22 KB of JSON that the hit never uses. A field that is not
@@ -135,7 +146,7 @@ class CosmosFactBackend:
                 self._container.query_items(
                     query=query,
                     parameters=params,
-                    partition_key=[self._family_id, "shared", "FACTS"],
+                    partition_key=self._pk,
                 )
             )
         )
@@ -148,9 +159,9 @@ class CosmosFactBackend:
     def _to_document(self, record: FactRecord) -> dict[str, Any]:
         doc: dict[str, Any] = {
             "family_id": self._family_id,
-            "user_id": "shared",
+            "user_id": self._scope,
             "category": "FACTS",
-            "is_shared": True,
+            "is_shared": self._scope == "shared",
             **fact_state(record),
         }
         if record.vector_embeddings:
