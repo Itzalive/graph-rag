@@ -4,6 +4,7 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from graph_rag.clock import Clock, read_clock, utc_now
+from graph_rag.entities import EntityRecord, alias_key, alias_keys, identifier_key, identifier_keys
 from graph_rag.facts import (
     FactRecord, FactSearchHit, FactSearchRequest, cosine_distance, fact_state, hit_from_record, is_listed,
 )
@@ -20,6 +21,7 @@ class InMemoryFactBackend:
         self._facts: dict[str, FactRecord] = {}
         self._changes: dict[str, FactChange] = {}
         self._ops: set[str] = set()
+        self._entities: dict[str, EntityRecord] = {}
         self._clock = clock
 
     async def upsert_fact(self, record: FactRecord) -> None:
@@ -52,17 +54,21 @@ class InMemoryFactBackend:
         scored.sort(key=lambda t: (t[0], t[1].fact_id))
         return [hit_from_record(r, dist) for dist, r in scored[: request.limit]]
 
-    async def write_change(self, record: FactRecord, changes: Sequence[FactChange]) -> None:
+    async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
+                           entities: Sequence[EntityRecord] = ()) -> None:
         check_write(record, changes)
         op_id = changes[-1].op_id
         if op_id in self._ops:
             raise AlreadyAppliedError(op_id)
         stored = [*changes[:-1], replace(changes[-1], after=fact_state(record))]
-        if any(change_id(c.fact_id, c.seq) in self._changes for c in stored):
+        if any(change_id(c.fact_id, c.seq) in self._changes for c in stored) or any(
+                e.entity_id in self._entities for e in entities):
             raise StaleWriteError(record.fact_id)
         self._ops.add(op_id)
         for change in stored:
             self._changes[change_id(change.fact_id, change.seq)] = change
+        for entity in entities:
+            self._entities[entity.entity_id] = entity
         self._facts[record.fact_id] = record
 
     async def history(self, fact_id: str, *, after_seq: int = -1,
@@ -77,3 +83,18 @@ class InMemoryFactBackend:
             return False
         self._facts[fact_id] = replace(record, vector_embeddings=tuple(vectors))
         return True
+
+    async def upsert_entity(self, entity: EntityRecord) -> None:
+        self._entities[entity.entity_id] = entity
+
+    async def read_entity(self, entity_id: str) -> EntityRecord | None:
+        return self._entities.get(entity_id)
+
+    async def list_entities(self, *, type: str | None = None) -> list[EntityRecord]:
+        return sorted((e for e in self._entities.values() if type is None or e.type == type), key=lambda e: e.entity_id)
+
+    async def find_by_alias(self, type: str, alias: str) -> list[EntityRecord]:
+        return [e for e in await self.list_entities(type=type) if alias_key(alias) in alias_keys(e)]
+
+    async def find_by_identifier(self, kind: str, value: str) -> list[EntityRecord]:
+        return [e for e in await self.list_entities() if identifier_key(kind, value) in identifier_keys(e)]

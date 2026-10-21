@@ -9,6 +9,7 @@ from azure.cosmos.exceptions import CosmosBatchOperationError
 
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
+from graph_rag.entities import EntityRecord, Identifier
 from graph_rag.facts import FactRecord, FactSearchRequest, fact_state
 from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, StaleWriteError, WriteCheckError
 from cosmos_fake import FakeContainer  # tests/ is on sys.path (no __init__.py; pytest prepend import mode)
@@ -247,3 +248,56 @@ async def test_cosmos_other_batch_failures_are_raised_unchanged():
     with pytest.raises(CosmosBatchOperationError) as exc:
         await _write(backend, 1, "op-1")
     assert exc.value.status_code == 413
+
+
+BROWNIES = EntityRecord(entity_id="activity-0f3a", type="activity", name="Brownies", aliases=("1st Oakfield Brownies",))
+
+
+async def test_entities_are_stored_found_by_alias_and_never_memories(make_backend):   # AC-M17, AC-M5
+    backend = make_backend()
+    await backend.upsert_entity(BROWNIES)
+    assert await backend.read_entity("activity-0f3a") == BROWNIES
+    assert await backend.find_by_alias("activity", "brownies") == [BROWNIES]
+    assert await backend.find_by_alias("activity", "1ST OAKFIELD BROWNIES") == [BROWNIES]
+    assert await backend.find_by_alias("organisation", "brownies") == []
+    assert await backend.list_entities(type="activity") == [BROWNIES]
+    assert await backend.read_fact("activity-0f3a") is None
+    assert await backend.list_facts(include_expired=True, include_future=True) == []
+
+
+async def test_entities_found_by_identifier(make_backend):
+    backend = make_backend()
+    club = EntityRecord(entity_id="organisation-77", type="organisation", name="Swim Club",
+                        identifiers=(Identifier("domain", "SwimClub.example"),))
+    await backend.upsert_entity(club)
+    assert await backend.find_by_identifier("domain", "swimclub.example") == [club]
+    assert await backend.find_by_identifier("address", "swimclub.example") == []
+
+
+async def test_a_new_entity_is_written_with_its_memory(make_backend):   # spec §4 one batch
+    backend = make_backend()
+    record = _rec(lifespan="lasting", seq=1, entities=("activity-0f3a",))
+    await backend.write_change(record, [_change(1, "op-a", kind="created")], entities=[BROWNIES])
+    assert await backend.read_entity("activity-0f3a") == BROWNIES
+    assert (await backend.read_fact("m1")).entities == ("activity-0f3a",)
+
+
+async def test_two_writes_creating_one_entity_one_wins(make_backend):   # AC-M16b
+    backend = make_backend()
+    first = _rec("m1", lifespan="lasting", seq=1, entities=("activity-0f3a",))
+    await backend.write_change(first, [_change(1, "op-a", kind="created")], entities=[BROWNIES])
+    second = _rec("m2", body="Bob goes to Brownies", lifespan="lasting", seq=1, entities=("activity-0f3a",))
+    with pytest.raises(StaleWriteError):
+        await backend.write_change(second, [_change(1, "op-b", kind="created", fact_id="m2")], entities=[BROWNIES])
+    assert await backend.read_fact("m2") is None
+    assert await backend.history("m2") == []
+
+
+async def test_cosmos_refuses_a_write_too_big_for_one_batch():   # Cosmos holds at most 100 operations per batch
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    many = [EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}") for i in range(98)]
+    with pytest.raises(ValueError, match="100"):
+        await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-big", kind="created")],
+                                   entities=many)
+    assert container.batches == []

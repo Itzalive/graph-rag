@@ -7,6 +7,7 @@ from dataclasses import replace
 from typing import Any
 
 from graph_rag.clock import Clock, read_clock, utc_now
+from graph_rag.entities import EntityRecord, alias_key, entity_from_state, entity_to_state, identifier_key
 from graph_rag.facts import (
     SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, fact_state, hit_from_state, record_from_state,
 )
@@ -39,6 +40,10 @@ CLAUSE_NOT_EXCLUDED = "ARRAY_CONTAINS(@exclude_ids, c.id) = false"
 CLAUSE_CHANGES = "c.doc_type = 'fact_change'"
 CLAUSE_CHANGE_OF_FACT = "c.fact_id = @fact_id"
 CLAUSE_AFTER_SEQ = "c.seq > @after"
+CLAUSE_ENTITIES = "c.doc_type = 'entity'"
+CLAUSE_ENTITY_TYPE = "c.type = @type"
+CLAUSE_ALIAS = "ARRAY_CONTAINS(c.alias_keys, @alias)"
+CLAUSE_IDENTIFIER = "ARRAY_CONTAINS(c.identifier_keys, @identifier)"
 
 # A transactional batch holds at most 100 operations (Azure Cosmos DB limit).
 _MAX_BATCH_OPERATIONS = 100
@@ -152,11 +157,13 @@ class CosmosFactBackend:
 
     # --- RecordedFactBackend ---
 
-    async def write_change(self, record: FactRecord, changes: Sequence[FactChange]) -> None:
-        """Write the memory, its change records and the op marker in one transactional batch (spec §2). A request whose
-        marker exists raises AlreadyAppliedError before anything is sent; a create conflict on the marker inside the batch
-        (two copies of one request at once) raises it too; any other create conflict raises StaleWriteError. Any other
-        batch failure is raised unchanged. The memory document is replaced whole: pass the vectors to keep."""
+    async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
+                           entities: Sequence[EntityRecord] = ()) -> None:
+        """Write the memory, its change records, the op marker and any new entities in one transactional batch (spec §2).
+        A request whose marker exists raises AlreadyAppliedError before anything is sent; a create conflict on the marker
+        inside the batch (two copies of one request at once) raises it too; any other create conflict (a change record's
+        seq, or a new entity's id) raises StaleWriteError. Any other batch failure is raised unchanged. The memory
+        document is replaced whole: pass the vectors to keep."""
         from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
 
         check_write(record, changes)
@@ -168,6 +175,7 @@ class CosmosFactBackend:
         operations: list[tuple[str, tuple[dict[str, Any]]]] = [
             ("create", (self._stamp({"id": marker, "doc_type": "fact_op", "op_id": op_id, "fact_id": record.fact_id}),)),
             *[("create", (self._stamp(change_to_state(change)),)) for change in stored],
+            *[("create", (self._stamp(entity_to_state(entity)),)) for entity in entities],
             ("upsert", (self._to_document(record),)),
         ]
         if len(operations) > _MAX_BATCH_OPERATIONS:
@@ -213,7 +221,35 @@ class CosmosFactBackend:
             return False
         return True
 
+    async def upsert_entity(self, entity: EntityRecord) -> None:
+        doc = self._stamp(entity_to_state(entity))
+        await asyncio.to_thread(lambda: self._container.upsert_item(doc))
+
+    async def read_entity(self, entity_id: str) -> EntityRecord | None:
+        doc = await self._read_raw(entity_id)
+        return entity_from_state(doc) if doc is not None and doc.get("doc_type") == "entity" else None
+
+    async def list_entities(self, *, type: str | None = None) -> list[EntityRecord]:
+        if type is None:
+            return await self._entities([], [])
+        return await self._entities([CLAUSE_ENTITY_TYPE], [{"name": "@type", "value": type}])
+
+    async def find_by_alias(self, type: str, alias: str) -> list[EntityRecord]:
+        return await self._entities([CLAUSE_ENTITY_TYPE, CLAUSE_ALIAS],
+                                    [{"name": "@type", "value": type}, {"name": "@alias", "value": alias_key(alias)}])
+
+    async def find_by_identifier(self, kind: str, value: str) -> list[EntityRecord]:
+        return await self._entities([CLAUSE_IDENTIFIER],
+                                    [{"name": "@identifier", "value": identifier_key(kind, value)}])
+
     # --- helpers ---
+
+    async def _entities(self, filters: list[str], params: list[dict[str, Any]]) -> list[EntityRecord]:
+        query = "SELECT * FROM c WHERE " + " AND ".join([CLAUSE_ENTITIES, *filters])
+        rows = await asyncio.to_thread(
+            lambda: list(self._container.query_items(query=query, parameters=params or None, partition_key=self._pk))
+        )
+        return sorted((entity_from_state(row) for row in rows), key=lambda e: e.entity_id)
 
     def _stamp(self, doc: dict[str, Any]) -> dict[str, Any]:
         return {**doc, "family_id": self._family_id, "user_id": self._scope, "category": "FACTS"}
