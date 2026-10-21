@@ -2,18 +2,23 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from datetime import datetime
 from typing import Any
 
 from graph_rag.clock import Clock, read_clock, utc_now
-from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest
+from graph_rag.facts import (
+    SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, fact_state, hit_from_state, record_from_state,
+)
 
 
-# Every fact field a search hit can use, including the extras seen in production facts (claude-assistant-yh9p).
+# Every fact field a search hit can use, including the extras seen in production facts (claude-assistant-yh9p) and the
+# recorded-memory fields with Kerwen's own extras (claude-assistant-xz59.9 §3).
 _SEARCH_FIELDS = (
     "id", "fact", "created_at", "last_updated_at", "source", "subject", "fact_type", "confidence", "valid_until",
     "family_id", "user_id", "category", "is_shared", "deleted", "deleted_at",
     "extracted_at", "history", "metadata", "updated_at", "user",
+    "kind", "holder", "lifespan", "valid_from", "validity_basis", "forgotten_at", "purged_at", "learned_at",
+    "last_changed_at", "last_confirmed_at", "entities", "topics", "seq",
+    "constraint", "situation", "attribute", "calc",
 )
 _SEARCH_SELECT = ", ".join(f"c.{field}" for field in _SEARCH_FIELDS)
 
@@ -136,85 +141,21 @@ class CosmosFactBackend:
         )
         # With the cosine distance function VectorDistance returns a similarity (1 = identical) and ORDER BY puts the most
         # similar first: 1 - similarity is the FactSearchHit cosine distance, already in ascending order.
-        results = raw_results
-        known_keys = {
-            "id", "fact", "score", "created_at", "last_updated_at", "source",
-            "subject", "fact_type", "confidence", "valid_until", "family_id",
-            "user_id", "category", "is_shared", "deleted", "deleted_at",
-            "vector_embeddings", "_rid", "_self", "_etag", "_attachments", "_ts",
-        }
-        return [
-            FactSearchHit(
-                fact_id=doc["id"],
-                body=doc["fact"],
-                score=1.0 - doc["score"] if "score" in doc else float("inf"),
-                created_at=self._parse_datetime(doc.get("created_at")),
-                updated_at=self._parse_datetime(doc.get("last_updated_at")),
-                source=doc.get("source"),
-                subject=doc.get("subject"),
-                fact_type=doc.get("fact_type"),
-                confidence=doc.get("confidence"),
-                valid_until=self._parse_datetime(doc.get("valid_until")),
-                extras={k: v for k, v in doc.items() if k not in known_keys},
-            )
-            for doc in results
-        ]
+        return [hit_from_state(doc, 1.0 - doc["score"] if "score" in doc else float("inf")) for doc in raw_results]
 
     # --- helpers ---
 
     def _to_document(self, record: FactRecord) -> dict[str, Any]:
         doc: dict[str, Any] = {
-            "id": record.fact_id,
             "family_id": self._family_id,
             "user_id": "shared",
             "category": "FACTS",
             "is_shared": True,
-            "fact": record.body,
-            "created_at": record.created_at.isoformat(),
-            "last_updated_at": record.updated_at.isoformat(),
-            "source": record.source,
-            "subject": record.subject,
-            "fact_type": record.fact_type,
-            "confidence": record.confidence,
-            "deleted": record.deleted,
-            "deleted_at": record.deleted_at.isoformat() if record.deleted_at else None,
-            "vector_embeddings": list(record.vector_embeddings) if record.vector_embeddings else None,
-            **record.extras,
+            **fact_state(record),
         }
-        if record.valid_until is not None:
-            doc["valid_until"] = record.valid_until.isoformat()
-        return {k: v for k, v in doc.items() if v is not None}
+        if record.vector_embeddings:
+            doc["vector_embeddings"] = list(record.vector_embeddings)
+        return doc
 
     def _from_document(self, doc: dict[str, Any]) -> FactRecord:
-        known_keys = {
-            "id", "family_id", "user_id", "category", "is_shared",
-            "fact", "created_at", "last_updated_at", "source", "subject",
-            "fact_type", "confidence", "valid_until", "deleted", "deleted_at",
-            "vector_embeddings", "_rid", "_self", "_etag", "_attachments", "_ts",
-        }
-        extras = {k: v for k, v in doc.items() if k not in known_keys}
-        return FactRecord(
-            fact_id=doc["id"],
-            body=doc["fact"],
-            created_at=self._parse_datetime(doc.get("created_at")) or read_clock(self._clock),
-            updated_at=(
-                self._parse_datetime(doc.get("last_updated_at"))
-                or self._parse_datetime(doc.get("created_at"))
-                or read_clock(self._clock)
-            ),
-            source=doc.get("source"),
-            subject=doc.get("subject"),
-            fact_type=doc.get("fact_type"),
-            confidence=doc.get("confidence"),
-            valid_until=self._parse_datetime(doc.get("valid_until")),
-            deleted=bool(doc.get("deleted", False)),
-            deleted_at=self._parse_datetime(doc.get("deleted_at")),
-            vector_embeddings=tuple(doc["vector_embeddings"]) if doc.get("vector_embeddings") else None,
-            extras=extras,
-        )
-
-    @staticmethod
-    def _parse_datetime(value: str | None) -> datetime | None:
-        if value is None:
-            return None
-        return datetime.fromisoformat(value)
+        return record_from_state(doc, now=read_clock(self._clock))

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from graph_rag.clock import Clock, read_clock, utc_now
-from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest, cosine_distance
+from graph_rag.facts import FactRecord, FactSearchHit, FactSearchRequest, cosine_distance, hit_from_record
 
 
 class InMemoryFactBackend:
@@ -46,19 +46,4 @@ class InMemoryFactBackend:
             dist = cosine_distance(request.query_vector, record.vector_embeddings)
             scored.append((dist, record))
         scored.sort(key=lambda t: (t[0], t[1].fact_id))
-        return [
-            FactSearchHit(
-                fact_id=r.fact_id,
-                body=r.body,
-                score=dist,
-                created_at=r.created_at,
-                updated_at=r.updated_at,
-                source=r.source,
-                subject=r.subject,
-                fact_type=r.fact_type,
-                confidence=r.confidence,
-                valid_until=r.valid_until,
-                extras=r.extras,
-            )
-            for dist, r in scored[: request.limit]
-        ]
+        return [hit_from_record(r, dist) for dist, r in scored[: request.limit]]

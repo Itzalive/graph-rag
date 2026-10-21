@@ -5,7 +5,9 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
-from graph_rag.facts import FactRecord, FactSearchRequest, cosine_distance
+from graph_rag.facts import (
+    FactRecord, FactSearchRequest, Holder, cosine_distance, fact_state, hit_from_record, record_from_state,
+)
 
 
 def _record(
@@ -138,3 +140,50 @@ async def test_search_facts_skips_records_without_embeddings():
 def test_cosine_distance_rejects_mismatched_dimensions():
     with pytest.raises(ValueError, match="dimensions"):
         cosine_distance((1.0, 0.0), (1.0,))
+
+
+T0 = datetime(2026, 10, 18, 9, 0, tzinfo=UTC)
+
+
+def _full_record() -> FactRecord:
+    return FactRecord(
+        fact_id="m1", body="Bob must not eat peanuts", created_at=T0, updated_at=T0, confidence=0.95,
+        kind="fact", holder=Holder("parent", "parent1"), lifespan="lasting",
+        valid_from=T0, valid_until=T0 + timedelta(days=30), validity_basis="ended",
+        forgotten_at=None, purged_at=None, learned_at=T0, last_changed_at=T0, last_confirmed_at=T0,
+        entities=("person-child2",), topics=("meals",), seq=3, extras={"constraint": True},
+    )
+
+
+def test_state_round_trips_every_recorded_field():
+    record = _full_record()
+    assert record_from_state(fact_state(record), now=T0) == record
+
+
+def test_old_style_record_state_has_no_new_keys():
+    state = fact_state(FactRecord(fact_id="o1", body="likes pasta", created_at=T0, updated_at=T0))
+    assert set(state) == {"id", "fact", "created_at", "last_updated_at", "deleted"}
+
+
+def test_old_document_reads_with_seq_zero_and_empty_lists():
+    record = record_from_state({"id": "o1", "fact": "likes pasta", "created_at": T0.isoformat()}, now=T0)
+    assert (record.seq, record.entities, record.topics, record.kind, record.holder) == (0, (), (), None, None)
+
+
+def test_extras_value_survives_when_the_typed_field_is_unset_and_loses_when_set():
+    via_extras = FactRecord(fact_id="e1", body="b", created_at=T0, updated_at=T0, extras={"kind": "opinion"})
+    assert fact_state(via_extras)["kind"] == "opinion"
+    typed = FactRecord(fact_id="e1", body="b", created_at=T0, updated_at=T0, kind="fact", extras={"kind": "opinion"})
+    assert fact_state(typed)["kind"] == "fact"
+
+
+def test_holder_without_ref_has_no_ref_key():
+    state = fact_state(FactRecord(fact_id="h1", body="b", created_at=T0, updated_at=T0, holder=Holder("sender")))
+    assert state["holder"] == {"kind": "sender"}
+
+
+def test_search_hit_carries_recorded_fields():
+    hit = hit_from_record(_full_record(), 0.25)
+    assert (hit.kind, hit.holder, hit.lifespan, hit.topics, hit.entities, hit.seq, hit.score) == (
+        "fact", Holder("parent", "parent1"), "lasting", ("meals",), ("person-child2",), 3, 0.25)
+    assert hit.extras == {"constraint": True}
