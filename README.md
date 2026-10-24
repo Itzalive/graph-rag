@@ -31,7 +31,8 @@ first). Two adapters implement it:
 
 `FactRecord` and `FactSearchHit` also carry the recorded-memory fields (`kind`, `holder` as a `Holder(kind, ref)`,
 `lifespan`, `valid_from`, `validity_basis`, `forgotten_at`, `purged_at`, `learned_at`, `last_changed_at`,
-`last_confirmed_at`, `entities`, `topics`, `seq`); all are optional and a document written before 0.3.0 reads as
+`last_confirmed_at`, `about` (entity ids the memory is about), `mentions` (other entity ids it names), `topics`,
+`seq`); all are optional and a document written before 0.3.0 reads as
 `kind None`, `seq 0`. List and search return only current memories: never deleted, forgotten or purged; past
 `valid_until` only with `include_expired`; before `valid_from` only with `include_future`; documents with a `doc_type`
 (change records, op markers, entities) are never memories.
@@ -54,15 +55,18 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
 
 `graph_rag.record.RecordedFactBackend` extends `FactBackend`; both adapters implement it.
 
-- `write_change(record, changes, entities=())` writes the memory, its one or two `FactChange` records (two only for an
-  old document's first change, the first at `seq 0` carrying its own `after`), an `op-<op_id>` marker and any new
-  entities in one transactional batch. The backend sets the last change's `after` to the memory's state. Before sending
-  it refuses (`ValueError`) a write Cosmos could not take: more than 100 batch operations, an entity id twice, or a
-  `/`, `\`, `?` or `#` in the fact id or op id. It then runs the write checks W1–W4 (`WriteCheckError(code)`): a dated
+- `write_change(record, changes, entities=(), entity_updates=())` writes the memory, its one or two `FactChange` records
+  (two only for an old document's first change, the first at `seq 0` carrying its own `after`), an `op-<op_id>` marker,
+  any new entities and any entity updates in one transactional batch. An entity update replaces the entity only if it is
+  unchanged since it was read: it must carry the `version` that read returned (Cosmos: a batch `replace` with
+  `if_match_etag`). The backend sets the last change's `after` to the memory's state. Before sending it refuses
+  (`ValueError`) a write Cosmos could not take: more than 100 batch operations (the marker, the changes, new entities,
+  entity updates and the memory), an entity id twice, an entity update without a version, or a `/`, `\`, `?` or `#` in
+  the fact id or op id. It then runs the write checks W1–W4 (`WriteCheckError(code)`): a dated
   memory has a `valid_until`; a `valid_until` on any other lifespan has basis `ended`; a validity date has a basis; the
   memory's `seq` is the last change's.
 - A change record's id is `<fact_id>:<seq>`. A writer reads the memory's `seq` and writes `seq + 1`; if another write
-  took it, or created an entity this write creates, `StaleWriteError` is raised: re-read and apply once more.
+  took it, created an entity this write creates, or changed or removed an entity this write updates, `StaleWriteError` is raised; nothing is written: re-read and apply once more.
 - `op_id` names the request. If its marker exists the request was applied before: `AlreadyAppliedError`, which callers
   treat as success with nothing written. Markers are kept.
 - `history(fact_id, *, after_seq=-1, limit=100)` returns change records in `seq` order, at most `limit` (1–500); page
@@ -72,7 +76,12 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
 
 ### Entities
 
-`graph_rag.entities.EntityRecord(entity_id, type, name, aliases, identifiers, seq)` lives in the same bucket
-(`doc_type: "entity"`). `upsert_entity`, `read_entity`, `list_entities(type=None)`, `find_by_alias(type, alias)` (exact,
-case-insensitive, over the name and aliases) and `find_by_identifier(kind, value)` (case-insensitive value). Types and
-ids are the caller's.
+`graph_rag.entities.EntityRecord(entity_id, type, name, handle, aliases, identifiers, seq, version)` lives in the same
+bucket (`doc_type: "entity"`). `handle` is required: the caller's readable id for the entity; it is not an alias key.
+`version` is set by every read (Cosmos: the document's `_etag`; in memory: a counter), moves on every write, is never
+stored and is not part of equality. An entity document without a handle (written before handles) raises
+`MissingHandleError` (a `ValueError` naming the entity id) on every read; there is no compatibility layer: reset the
+store that holds it. `upsert_entity`, `read_entity`, `read_entities(ids)` (the entities with those ids in
+one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueError` above), `list_entities(type=None)`,
+`find_by_alias(type, alias)` (exact, case-insensitive, over the name and aliases) and `find_by_identifier(kind, value)`
+(case-insensitive value). Types, handles and ids are the caller's.
