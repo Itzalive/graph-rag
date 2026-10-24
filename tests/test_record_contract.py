@@ -279,17 +279,17 @@ async def test_entities_found_by_identifier(make_backend):
 
 async def test_a_new_entity_is_written_with_its_memory(make_backend):   # spec §4 one batch
     backend = make_backend()
-    record = _rec(lifespan="lasting", seq=1, entities=("activity-0f3a",))
+    record = _rec(lifespan="lasting", seq=1, about=("activity-0f3a",))
     await backend.write_change(record, [_change(1, "op-a", kind="created")], entities=[BROWNIES])
     assert await backend.read_entity("activity-0f3a") == BROWNIES
-    assert (await backend.read_fact("m1")).entities == ("activity-0f3a",)
+    assert (await backend.read_fact("m1")).about == ("activity-0f3a",)
 
 
 async def test_two_writes_creating_one_entity_one_wins(make_backend):   # AC-M16b
     backend = make_backend()
-    first = _rec("m1", lifespan="lasting", seq=1, entities=("activity-0f3a",))
+    first = _rec("m1", lifespan="lasting", seq=1, about=("activity-0f3a",))
     await backend.write_change(first, [_change(1, "op-a", kind="created")], entities=[BROWNIES])
-    second = _rec("m2", body="Bob goes to Brownies", lifespan="lasting", seq=1, entities=("activity-0f3a",))
+    second = _rec("m2", body="Bob goes to Brownies", lifespan="lasting", seq=1, about=("activity-0f3a",))
     with pytest.raises(StaleWriteError):
         await backend.write_change(second, [_change(1, "op-b", kind="created", fact_id="m2")], entities=[BROWNIES])
     assert await backend.read_fact("m2") is None
@@ -306,3 +306,15 @@ async def test_a_write_cosmos_would_refuse_is_refused_on_both(make_backend, enti
         await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-big", kind="created")],
                                    entities=entities)
     assert await backend.read_fact("m1") is None
+
+
+async def test_about_and_mentions_round_trip_through_write_read_search_and_history(make_backend):   # AC-R19
+    backend = make_backend()
+    record = _rec(lifespan="lasting", seq=1, about=("ent-a",), mentions=("ent-b", "ent-c"), vector_embeddings=(1.0, 0.0))
+    await backend.write_change(record, [_change(1, "op-a", kind="created")])
+    read = await backend.read_fact("m1")
+    assert (read.about, read.mentions) == (("ent-a",), ("ent-b", "ent-c"))
+    [hit] = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
+    assert (hit.about, hit.mentions) == (("ent-a",), ("ent-b", "ent-c"))
+    [change] = await backend.history("m1")
+    assert (change.after["about"], change.after["mentions"]) == (["ent-a"], ["ent-b", "ent-c"])

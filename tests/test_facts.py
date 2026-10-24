@@ -151,7 +151,7 @@ def _full_record() -> FactRecord:
         kind="fact", holder=Holder("parent", "parent1"), lifespan="lasting",
         valid_from=T0, valid_until=T0 + timedelta(days=30), validity_basis="ended",
         forgotten_at=None, purged_at=None, learned_at=T0, last_changed_at=T0, last_confirmed_at=T0,
-        entities=("person-child2",), topics=("meals",), seq=3, extras={"constraint": True},
+        about=("person-child2",), mentions=("activity-1",), topics=("meals",), seq=3, extras={"constraint": True},
     )
 
 
@@ -167,7 +167,8 @@ def test_old_style_record_state_has_no_new_keys():
 
 def test_old_document_reads_with_seq_zero_and_empty_lists():
     record = record_from_state({"id": "o1", "fact": "likes pasta", "created_at": T0.isoformat()}, now=T0)
-    assert (record.seq, record.entities, record.topics, record.kind, record.holder) == (0, (), (), None, None)
+    assert (record.seq, record.about, record.mentions, record.topics, record.kind, record.holder) == (
+        0, (), (), (), None, None)
 
 
 def test_extras_value_survives_when_the_typed_field_is_unset_and_loses_when_set():
@@ -184,6 +185,17 @@ def test_holder_without_ref_has_no_ref_key():
 
 def test_search_hit_carries_recorded_fields():
     hit = hit_from_record(_full_record(), 0.25)
-    assert (hit.kind, hit.holder, hit.lifespan, hit.topics, hit.entities, hit.seq, hit.score) == (
-        "fact", Holder("parent", "parent1"), "lasting", ("meals",), ("person-child2",), 3, 0.25)
+    assert (hit.kind, hit.holder, hit.lifespan, hit.topics, hit.about, hit.mentions, hit.seq, hit.score) == (
+        "fact", Holder("parent", "parent1"), "lasting", ("meals",), ("person-child2",), ("activity-1",), 3, 0.25)
     assert hit.extras == {"constraint": True}
+
+
+def test_about_and_mentions_are_two_stored_lists_and_entities_is_gone():
+    state = fact_state(_full_record())
+    assert (state["about"], state["mentions"]) == (["person-child2"], ["activity-1"])
+    assert "entities" not in state
+
+
+def test_a_document_still_holding_entities_reads_it_as_an_extra():   # no compatibility layer (spec §7)
+    record = record_from_state({"id": "o1", "fact": "b", "entities": ["x"]}, now=T0)
+    assert (record.about, record.mentions, record.extras) == ((), (), {"entities": ["x"]})

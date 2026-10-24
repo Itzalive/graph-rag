@@ -192,9 +192,10 @@ async def test_search_never_selects_the_embedding_vector():
     for field in ("c.id", "c.fact", "c.created_at", "c.last_updated_at", "c.source", "c.subject", "c.fact_type",
                   "c.confidence", "c.valid_until", "c.extracted_at", "c.history", "c.metadata", "c.updated_at", "c.user",
                   "c.kind", "c.holder", "c.lifespan", "c.valid_from", "c.validity_basis", "c.forgotten_at", "c.purged_at",
-                  "c.learned_at", "c.last_changed_at", "c.last_confirmed_at", "c.entities", "c.topics", "c.seq",
+                  "c.learned_at", "c.last_changed_at", "c.last_confirmed_at", "c.about", "c.mentions", "c.topics", "c.seq",
                   "c.constraint", "c.situation", "c.attribute", "c.calc"):
         assert field in select_list, field
+    assert "c.entities" not in select_list
 
 
 async def test_upsert_writes_recorded_fields_top_level():
@@ -212,7 +213,8 @@ async def test_read_returns_recorded_fields_typed_and_not_in_extras():
     backend, container = _backend()
     now = datetime.now(UTC).isoformat()
     container.read_item.return_value = {"id": "m1", "fact": "b", "created_at": now, "kind": "fact", "seq": 4,
-                                        "holder": {"kind": "kerwen"}, "entities": ["pet-1"], "calc": {"rule": "age"}}
+                                        "holder": {"kind": "kerwen"}, "about": ["pet-1"], "mentions": ["place-2"], "calc": {"rule": "age"}}
     record = await backend.read_fact("m1")
-    assert (record.kind, record.seq, record.holder, record.entities) == ("fact", 4, Holder("kerwen"), ("pet-1",))
+    assert (record.kind, record.seq, record.holder, record.about, record.mentions) == (
+        "fact", 4, Holder("kerwen"), ("pet-1",), ("place-2",))
     assert record.extras == {"calc": {"rule": "age"}}

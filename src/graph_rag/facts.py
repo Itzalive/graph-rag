@@ -39,7 +39,8 @@ class FactRecord:
     learned_at: datetime | None = None
     last_changed_at: datetime | None = None
     last_confirmed_at: datetime | None = None
-    entities: tuple[str, ...] = ()
+    about: tuple[str, ...] = ()      # entity ids the memory is about
+    mentions: tuple[str, ...] = ()   # other entity ids it names
     topics: tuple[str, ...] = ()
     seq: int = 0
 
@@ -78,7 +79,8 @@ class FactSearchHit:
     learned_at: datetime | None = None
     last_changed_at: datetime | None = None
     last_confirmed_at: datetime | None = None
-    entities: tuple[str, ...] = ()
+    about: tuple[str, ...] = ()      # entity ids the memory is about
+    mentions: tuple[str, ...] = ()   # other entity ids it names
     topics: tuple[str, ...] = ()
     seq: int = 0
 
@@ -111,7 +113,7 @@ _CORE_KEYS = frozenset({
 })
 RECORDED_KEYS = frozenset({
     "kind", "holder", "lifespan", "valid_from", "validity_basis", "forgotten_at", "purged_at", "learned_at",
-    "last_changed_at", "last_confirmed_at", "entities", "topics", "seq",
+    "last_changed_at", "last_confirmed_at", "about", "mentions", "topics", "seq",
 })
 # Keys a stored memory document holds that are not extras.
 NON_EXTRA_KEYS = SYSTEM_KEYS | PARTITION_KEYS | _CORE_KEYS | RECORDED_KEYS
@@ -163,7 +165,8 @@ def fact_state(record: FactRecord) -> dict[str, Any]:
         "learned_at": _iso(record.learned_at),
         "last_changed_at": _iso(record.last_changed_at),
         "last_confirmed_at": _iso(record.last_confirmed_at),
-        "entities": list(record.entities) or None,
+        "about": list(record.about) or None,
+        "mentions": list(record.mentions) or None,
         "topics": list(record.topics) or None,
         "seq": record.seq or None,
     }
@@ -197,7 +200,8 @@ def record_from_state(doc: dict[str, Any], *, now: datetime) -> FactRecord:
         learned_at=_dt(doc.get("learned_at")),
         last_changed_at=_dt(doc.get("last_changed_at")),
         last_confirmed_at=_dt(doc.get("last_confirmed_at")),
-        entities=tuple(doc.get("entities") or ()),
+        about=tuple(doc.get("about") or ()),
+        mentions=tuple(doc.get("mentions") or ()),
         topics=tuple(doc.get("topics") or ()),
         seq=int(doc.get("seq", 0)),
     )
@@ -225,7 +229,8 @@ def hit_from_state(doc: dict[str, Any], score: float) -> FactSearchHit:
         learned_at=_dt(doc.get("learned_at")),
         last_changed_at=_dt(doc.get("last_changed_at")),
         last_confirmed_at=_dt(doc.get("last_confirmed_at")),
-        entities=tuple(doc.get("entities") or ()),
+        about=tuple(doc.get("about") or ()),
+        mentions=tuple(doc.get("mentions") or ()),
         topics=tuple(doc.get("topics") or ()),
         seq=int(doc.get("seq", 0)),
     )
@@ -239,7 +244,7 @@ def hit_from_record(record: FactRecord, score: float) -> FactSearchHit:
         confidence=record.confidence, valid_until=record.valid_until, extras=record.extras, kind=record.kind,
         holder=record.holder, lifespan=record.lifespan, valid_from=record.valid_from,
         validity_basis=record.validity_basis, learned_at=record.learned_at, last_changed_at=record.last_changed_at,
-        last_confirmed_at=record.last_confirmed_at, entities=record.entities, topics=record.topics, seq=record.seq,
+        last_confirmed_at=record.last_confirmed_at, about=record.about, mentions=record.mentions, topics=record.topics, seq=record.seq,
     )
 
 

@@ -24,7 +24,7 @@ _SEARCH_FIELDS = (
     "family_id", "user_id", "category", "is_shared", "deleted", "deleted_at",
     "extracted_at", "history", "metadata", "updated_at", "user",
     "kind", "holder", "lifespan", "valid_from", "validity_basis", "forgotten_at", "purged_at", "learned_at",
-    "last_changed_at", "last_confirmed_at", "entities", "topics", "seq",
+    "last_changed_at", "last_confirmed_at", "about", "mentions", "topics", "seq",
     "constraint", "situation", "attribute", "calc",
 )
 _SEARCH_SELECT = ", ".join(f"c.{field}" for field in _SEARCH_FIELDS)
