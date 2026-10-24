@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 from collections.abc import Sequence
 from dataclasses import replace
 
@@ -22,7 +23,12 @@ class InMemoryFactBackend:
         self._changes: dict[str, FactChange] = {}
         self._ops: set[str] = set()
         self._entities: dict[str, EntityRecord] = {}
+        self._entity_versions = itertools.count(1)
         self._clock = clock
+
+    def _put_entity(self, entity: EntityRecord) -> None:
+        """Store an entity under a new version, as Cosmos gives a written document a new _etag."""
+        self._entities[entity.entity_id] = replace(entity, version=str(next(self._entity_versions)))
 
     async def upsert_fact(self, record: FactRecord) -> None:
         self._facts[record.fact_id] = record
@@ -68,7 +74,7 @@ class InMemoryFactBackend:
         for change in stored:
             self._changes[change_id(change.fact_id, change.seq)] = change
         for entity in entities:
-            self._entities[entity.entity_id] = entity
+            self._put_entity(entity)
         self._facts[record.fact_id] = record
 
     async def history(self, fact_id: str, *, after_seq: int = -1,
@@ -85,7 +91,7 @@ class InMemoryFactBackend:
         return True
 
     async def upsert_entity(self, entity: EntityRecord) -> None:
-        self._entities[entity.entity_id] = entity
+        self._put_entity(entity)
 
     async def read_entity(self, entity_id: str) -> EntityRecord | None:
         return self._entities.get(entity_id)

@@ -9,7 +9,7 @@ from azure.cosmos.exceptions import CosmosBatchOperationError
 
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
-from graph_rag.entities import EntityRecord, Identifier
+from graph_rag.entities import EntityRecord, Identifier, MissingHandleError
 from graph_rag.facts import FactRecord, FactSearchRequest, fact_state
 from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, StaleWriteError, WriteCheckError
 from cosmos_fake import FakeContainer  # tests/ is on sys.path (no __init__.py; pytest prepend import mode)
@@ -253,7 +253,7 @@ async def test_cosmos_other_batch_failures_are_raised_unchanged():
     assert exc.value.status_code == 413
 
 
-BROWNIES = EntityRecord(entity_id="activity-0f3a", type="activity", name="Brownies", aliases=("1st Oakfield Brownies",))
+BROWNIES = EntityRecord(entity_id="activity-0f3a", type="activity", name="Brownies", handle="brownies", aliases=("1st Oakfield Brownies",))
 
 
 async def test_entities_are_stored_found_by_alias_and_never_memories(make_backend):   # AC-M17, AC-M5
@@ -271,7 +271,7 @@ async def test_entities_are_stored_found_by_alias_and_never_memories(make_backen
 async def test_entities_found_by_identifier(make_backend):
     backend = make_backend()
     club = EntityRecord(entity_id="organisation-77", type="organisation", name="Swim Club",
-                        identifiers=(Identifier("domain", "SwimClub.example"),))
+                        handle="swim_club", identifiers=(Identifier("domain", "SwimClub.example"),))
     await backend.upsert_entity(club)
     assert await backend.find_by_identifier("domain", "swimclub.example") == [club]
     assert await backend.find_by_identifier("address", "swimclub.example") == []
@@ -297,7 +297,7 @@ async def test_two_writes_creating_one_entity_one_wins(make_backend):   # AC-M16
 
 
 @pytest.mark.parametrize("entities, message", [
-    ([EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}") for i in range(98)], "100"),
+    ([EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}", handle=f"place_{i}") for i in range(98)], "100"),
     ([BROWNIES, BROWNIES], "distinct"),
 ])
 async def test_a_write_cosmos_would_refuse_is_refused_on_both(make_backend, entities, message):
@@ -318,3 +318,49 @@ async def test_about_and_mentions_round_trip_through_write_read_search_and_histo
     assert (hit.about, hit.mentions) == (("ent-a",), ("ent-b", "ent-c"))
     [change] = await backend.history("m1")
     assert (change.after["about"], change.after["mentions"]) == (["ent-a"], ["ent-b", "ent-c"])
+
+
+async def test_entity_reads_carry_the_handle_and_a_version_that_moves_on_every_write(make_backend):   # AC-R19
+    backend = make_backend()
+    await backend.upsert_entity(BROWNIES)
+    first = await backend.read_entity("activity-0f3a")
+    assert (first.handle, first.version is not None) == ("brownies", True)
+    [listed] = await backend.list_entities(type="activity")
+    [found] = await backend.find_by_alias("activity", "Brownies")
+    assert listed.version == found.version == first.version
+    assert await backend.find_by_alias("activity", "brownies_pack") == []
+    await backend.upsert_entity(replace(first, aliases=("Brownies pack",)))
+    second = await backend.read_entity("activity-0f3a")
+    assert second.version != first.version and second.aliases == ("Brownies pack",)
+
+
+async def test_an_entity_created_with_a_memory_is_read_with_a_version(make_backend):
+    backend = make_backend()
+    await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-a", kind="created")],
+                               entities=[BROWNIES])
+    assert (await backend.read_entity("activity-0f3a")).version is not None
+
+
+async def test_cosmos_entity_version_is_the_documents_etag():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.upsert_entity(BROWNIES)
+    stored = container.docs[("fam1", "shared", "FACTS", "activity-0f3a")]
+    assert (await backend.read_entity("activity-0f3a")).version == stored["_etag"]
+    assert stored["handle"] == "brownies" and "version" not in stored
+
+
+async def test_cosmos_every_entity_read_of_a_document_without_a_handle_raises_the_typed_error():
+    backend = _backend_holding_an_entity_without_a_handle()
+    for read in (lambda: backend.read_entity("activity-old"), lambda: backend.list_entities(),
+                 lambda: backend.find_by_alias("activity", "brownies")):
+        with pytest.raises(MissingHandleError):
+            await read()
+
+
+def _backend_holding_an_entity_without_a_handle() -> CosmosFactBackend:
+    container = FakeContainer()
+    container.upsert_item({"id": "activity-old", "doc_type": "entity", "type": "activity", "name": "Brownies",
+                           "aliases": [], "alias_keys": ["brownies"], "identifiers": [], "identifier_keys": [],
+                           "family_id": "fam1", "user_id": "shared", "category": "FACTS"})
+    return CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
