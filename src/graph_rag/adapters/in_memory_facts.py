@@ -5,7 +5,9 @@ from collections.abc import Sequence
 from dataclasses import replace
 
 from graph_rag.clock import Clock, read_clock, utc_now
-from graph_rag.entities import EntityRecord, alias_key, alias_keys, identifier_key, identifier_keys
+from graph_rag.entities import (
+    EntityRecord, alias_key, alias_keys, check_entity_ids, identifier_key, identifier_keys,
+)
 from graph_rag.facts import (
     FactRecord, FactSearchHit, FactSearchRequest, cosine_distance, fact_state, hit_from_record, is_listed,
 )
@@ -95,6 +97,9 @@ class InMemoryFactBackend:
 
     async def read_entity(self, entity_id: str) -> EntityRecord | None:
         return self._entities.get(entity_id)
+
+    async def read_entities(self, ids: Sequence[str]) -> list[EntityRecord]:
+        return [self._entities[i] for i in check_entity_ids(ids) if i in self._entities]
 
     async def list_entities(self, *, type: str | None = None) -> list[EntityRecord]:
         return sorted((e for e in self._entities.values() if type is None or e.type == type), key=lambda e: e.entity_id)

@@ -7,7 +7,9 @@ from dataclasses import replace
 from typing import Any
 
 from graph_rag.clock import Clock, read_clock, utc_now
-from graph_rag.entities import EntityRecord, alias_key, entity_from_state, entity_to_state, identifier_key
+from graph_rag.entities import (
+    EntityRecord, alias_key, check_entity_ids, entity_from_state, entity_to_state, identifier_key,
+)
 from graph_rag.facts import (
     SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, fact_state, hit_from_state, record_from_state,
 )
@@ -44,6 +46,7 @@ CLAUSE_ENTITIES = "c.doc_type = 'entity'"
 CLAUSE_ENTITY_TYPE = "c.type = @type"
 CLAUSE_ALIAS = "ARRAY_CONTAINS(c.alias_keys, @alias)"
 CLAUSE_IDENTIFIER = "ARRAY_CONTAINS(c.identifier_keys, @identifier)"
+CLAUSE_ENTITY_IDS = "ARRAY_CONTAINS(@ids, c.id)"
 
 # A transactional batch holds at most 100 operations (Azure Cosmos DB limit).
 
@@ -225,6 +228,14 @@ class CosmosFactBackend:
     async def read_entity(self, entity_id: str) -> EntityRecord | None:
         doc = await self._read_raw(entity_id)
         return entity_from_state(doc) if doc is not None and doc.get("doc_type") == "entity" else None
+
+    async def read_entities(self, ids: Sequence[str]) -> list[EntityRecord]:
+        """The entities with these ids, in one query, sorted by id; ids with no entity are skipped. At most
+        READ_ENTITIES_MAX_IDS distinct ids."""
+        distinct = check_entity_ids(ids)
+        if not distinct:
+            return []
+        return await self._entities([CLAUSE_ENTITY_IDS], [{"name": "@ids", "value": distinct}])
 
     async def list_entities(self, *, type: str | None = None) -> list[EntityRecord]:
         if type is None:

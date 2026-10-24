@@ -47,6 +47,7 @@ _CLAUSES: dict[str, Callable[[dict, dict], bool]] = {
     adapter.CLAUSE_ENTITY_TYPE: lambda d, p: d.get("type") == p["@type"],
     adapter.CLAUSE_ALIAS: lambda d, p: p["@alias"] in d.get("alias_keys", []),
     adapter.CLAUSE_IDENTIFIER: lambda d, p: p["@identifier"] in d.get("identifier_keys", []),
+    adapter.CLAUSE_ENTITY_IDS: lambda d, p: d["id"] in p["@ids"],
 }
 
 

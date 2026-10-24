@@ -2,6 +2,7 @@
 needs are written in one batch. Types are plain strings chosen by the caller."""
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -83,3 +84,15 @@ def entity_from_state(doc: dict[str, Any]) -> EntityRecord:
         seq=doc.get("seq", 0),
         version=doc.get("_etag"),
     )
+
+
+# read_entities answers one query; a caller with more ids reads them in several calls.
+READ_ENTITIES_MAX_IDS = 200
+
+
+def check_entity_ids(ids: Sequence[str]) -> list[str]:
+    """The distinct ids of one read_entities call, sorted; more than READ_ENTITIES_MAX_IDS is refused (ValueError)."""
+    distinct = sorted(set(ids))
+    if len(distinct) > READ_ENTITIES_MAX_IDS:
+        raise ValueError(f"read_entities takes at most {READ_ENTITIES_MAX_IDS} ids")
+    return distinct

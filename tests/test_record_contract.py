@@ -364,3 +364,52 @@ def _backend_holding_an_entity_without_a_handle() -> CosmosFactBackend:
                            "aliases": [], "alias_keys": ["brownies"], "identifiers": [], "identifier_keys": [],
                            "family_id": "fam1", "user_id": "shared", "category": "FACTS"})
     return CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+
+
+SWIM_CLUB = EntityRecord(entity_id="organisation-77", type="organisation", name="Swim Club", handle="swim_club")
+
+
+async def test_read_entities_returns_those_found_sorted_by_id(make_backend):   # AC-R19
+    backend = make_backend()
+    await backend.upsert_entity(SWIM_CLUB)
+    await backend.upsert_entity(BROWNIES)
+    got = await backend.read_entities(["organisation-77", "missing", "activity-0f3a", "organisation-77"])
+    assert got == [BROWNIES, SWIM_CLUB]
+    assert all(entity.version is not None for entity in got)
+    assert await backend.read_entities([]) == []
+
+
+async def test_read_entities_sees_only_this_familys_entities(make_backend):   # BR-40
+    fam1, fam2 = make_backend("fam1"), make_backend("fam2")
+    await fam1.upsert_entity(BROWNIES)
+    await fam1.upsert_fact(_rec("m1"))
+    assert await fam2.read_entities(["activity-0f3a"]) == []
+    assert await fam1.read_entities(["m1"]) == []          # a memory is never an entity
+
+
+async def test_read_entities_takes_at_most_200_distinct_ids(make_backend):
+    backend = make_backend()
+    assert await backend.read_entities([f"place-{i}" for i in range(200)]) == []
+    assert await backend.read_entities(["place-1"] * 300) == []
+    with pytest.raises(ValueError, match="200"):
+        await backend.read_entities([f"place-{i}" for i in range(201)])
+
+
+async def test_cosmos_read_entities_is_one_query_over_the_ids():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.upsert_entity(BROWNIES)
+    queries = []
+    real = container.query_items
+    container.query_items = lambda **kwargs: queries.append(kwargs) or real(**kwargs)
+    await backend.read_entities(["activity-0f3a", "x", "activity-0f3a"])
+    [query] = queries
+    assert "ARRAY_CONTAINS(@ids, c.id)" in query["query"] and "c.doc_type = 'entity'" in query["query"]
+    assert query["parameters"] == [{"name": "@ids", "value": ["activity-0f3a", "x"]}]
+    await backend.read_entities([])
+    assert len(queries) == 1
+
+
+async def test_cosmos_read_entities_of_a_document_without_a_handle_raises_the_typed_error():
+    with pytest.raises(MissingHandleError):
+        await _backend_holding_an_entity_without_a_handle().read_entities(["activity-old"])
