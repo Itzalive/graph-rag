@@ -68,15 +68,16 @@ def check_history_limit(limit: int) -> None:
 
 
 # Cosmos holds at most 100 operations in one transactional batch; a write is the marker, its changes, its new
-# entities and the memory.
+# entities, its entity updates and the memory.
 MAX_BATCH_OPERATIONS = 100
 # Characters Cosmos refuses in a document id: the fact id and op id become parts of ids.
 _ID_FORBIDDEN = frozenset("/\\?#")
 
 
-def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Sequence[EntityRecord] = ()) -> None:
+def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Sequence[EntityRecord] = (),
+                entity_updates: Sequence[EntityRecord] = ()) -> None:
     """The library's write checks, run before anything is sent. Raises ValueError for a malformed write and
-    WriteCheckError for a memory that breaks W1–W4."""
+    WriteCheckError for a memory that breaks W1–W4. An entity update carries the version it read."""
     if not 1 <= len(changes) <= 2:
         raise ValueError("a write carries one or two changes")
     if any(change.fact_id != record.fact_id for change in changes):
@@ -90,9 +91,12 @@ def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Seq
         raise ValueError("the last change must carry an op_id")
     if _ID_FORBIDDEN & set(record.fact_id + changes[-1].op_id):
         raise ValueError("fact_id and op_id must not contain /, \\, ? or #")
-    if len({entity.entity_id for entity in entities}) != len(entities):
+    entity_ids = [entity.entity_id for entity in (*entities, *entity_updates)]
+    if len(set(entity_ids)) != len(entity_ids):
         raise ValueError("entity ids must be distinct")
-    if 2 + len(changes) + len(entities) > MAX_BATCH_OPERATIONS:
+    if any(update.version is None for update in entity_updates):
+        raise ValueError("an entity update must carry the version it read")
+    if 2 + len(changes) + len(entities) + len(entity_updates) > MAX_BATCH_OPERATIONS:
         raise ValueError(f"a write may hold at most {MAX_BATCH_OPERATIONS} batch operations")
     if changes[-1].after is not None:
         raise ValueError("the backend sets the last change's after")
@@ -143,7 +147,8 @@ def change_from_state(doc: dict[str, Any]) -> FactChange:
 @runtime_checkable
 class RecordedFactBackend(FactBackend, Protocol):
     async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
-                           entities: Sequence[EntityRecord] = ()) -> None: ...
+                           entities: Sequence[EntityRecord] = (),
+                           entity_updates: Sequence[EntityRecord] = ()) -> None: ...
     async def history(self, fact_id: str, *, after_seq: int = -1,
                       limit: int = HISTORY_DEFAULT_LIMIT) -> list[FactChange]: ...
     async def set_vectors(self, fact_id: str, vectors: tuple[float, ...], *, expected_seq: int) -> bool: ...

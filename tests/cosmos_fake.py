@@ -2,9 +2,9 @@
 
 Documents are kept per hierarchical partition key. Transactional batches check every operation first and apply all or
 none; a create on an existing id fails with 409 at that operation's index, as the SDK reports it
-(azure/cosmos/exceptions.py CosmosBatchOperationError). Replace honours an etag condition with 412. Queries are answered
-only for the clauses the adapter defines: an unknown WHERE clause raises AssertionError, so a filter the adapter drops or
-misspells fails a test instead of passing silently."""
+(azure/cosmos/exceptions.py CosmosBatchOperationError). A replace, alone or in a batch, honours an etag condition with
+412 and fails with 404 on a missing id. Queries are answered only for the clauses the adapter defines: an unknown WHERE
+clause raises AssertionError, so a filter the adapter drops or misspells fails a test instead of passing silently."""
 from __future__ import annotations
 
 import copy
@@ -92,15 +92,25 @@ class FakeContainer:
             hook()
         self.batches.append(batch_operations)
         for index, operation in enumerate(batch_operations):
-            kind, (doc,) = operation[0], operation[1]
-            if kind not in ("create", "upsert"):
+            kind, args = operation[0], operation[1]
+            options = operation[2] if len(operation) > 2 else {}
+            if kind not in ("create", "upsert", "replace"):
                 raise AssertionError(f"unsupported batch operation: {kind}")
+            doc = args[-1]
             if list(_pk_of(doc)) != list(partition_key):
                 raise _batch_error(index, 400)
-            if kind == "create" and (*partition_key, doc["id"]) in self.docs:
+            key = (*partition_key, doc["id"])
+            if kind == "create" and key in self.docs:
                 raise _batch_error(index, 409)
+            if kind == "replace":
+                if args[0] != doc["id"]:
+                    raise AssertionError("a batch replace names one id and carries another")
+                if key not in self.docs:
+                    raise _batch_error(index, 404)
+                if "if_match_etag" in options and self.docs[key]["_etag"] != options["if_match_etag"]:
+                    raise _batch_error(index, 412)
         for operation in batch_operations:
-            self._put(operation[1][0])
+            self._put(operation[1][-1])
         return [{"statusCode": 201 if op[0] == "create" else 200} for op in batch_operations]
 
     def query_items(self, query: str, parameters=None, partition_key=None) -> list[dict]:

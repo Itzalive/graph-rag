@@ -160,24 +160,32 @@ class CosmosFactBackend:
     # --- RecordedFactBackend ---
 
     async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
-                           entities: Sequence[EntityRecord] = ()) -> None:
-        """Write the memory, its change records, the op marker and any new entities in one transactional batch (spec §2).
-        A request whose marker exists raises AlreadyAppliedError before anything is sent; a create conflict on the marker
-        inside the batch (two copies of one request at once) raises it too; any other create conflict (a change record's
-        seq, or a new entity's id) raises StaleWriteError. Any other batch failure is raised unchanged. The memory
-        document is replaced whole: pass the vectors to keep."""
+                           entities: Sequence[EntityRecord] = (),
+                           entity_updates: Sequence[EntityRecord] = ()) -> None:
+        """Write the memory, its change records, the op marker, any new entities and any entity updates in one
+        transactional batch (spec xz59.9 §2, xz59.11 §7). An entity update replaces the entity only if its etag is still
+        the `version` the update carries. A request whose marker exists raises AlreadyAppliedError before anything is
+        sent; a create conflict on the marker inside the batch (two copies of one request at once) raises it too; any
+        other create conflict (a change record's seq, or a new entity's id), a failed etag condition on an entity
+        update and an entity update whose entity no longer exists (404 on that replace) raise StaleWriteError. Any
+        other batch failure is raised unchanged. The memory document is replaced
+        whole: pass the vectors to keep."""
         from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
 
-        check_write(record, changes, entities)
+        check_write(record, changes, entities, entity_updates)
         op_id = changes[-1].op_id
         marker = op_marker_id(op_id)
         if await self._read_raw(marker) is not None:
             raise AlreadyAppliedError(op_id)
         stored = [*changes[:-1], replace(changes[-1], after=fact_state(record))]
-        operations: list[tuple[str, tuple[dict[str, Any]]]] = [
+        # The SDK's batch forms (azure/cosmos/_base.py _format_batch_operations): (kind, (body,)) for create and
+        # upsert; ("replace", (id, body), {"if_match_etag": etag}) for a conditional replace.
+        operations: list[tuple[Any, ...]] = [
             ("create", (self._stamp({"id": marker, "doc_type": "fact_op", "op_id": op_id, "fact_id": record.fact_id}),)),
             *[("create", (self._stamp(change_to_state(change)),)) for change in stored],
             *[("create", (self._stamp(entity_to_state(entity)),)) for entity in entities],
+            *[("replace", (update.entity_id, self._stamp(entity_to_state(update))), {"if_match_etag": update.version})
+              for update in entity_updates],
             ("upsert", (self._to_document(record),)),
         ]
         try:
@@ -187,8 +195,10 @@ class CosmosFactBackend:
         except CosmosBatchOperationError as exc:
             if exc.status_code == 409 and exc.error_index == 0:
                 raise AlreadyAppliedError(op_id) from exc
-            if exc.status_code == 409:
-                raise StaleWriteError(record.fact_id) from exc
+            first_update = 1 + len(stored) + len(entities)
+            is_update = first_update <= exc.error_index < first_update + len(entity_updates)
+            if exc.status_code in (409, 412) or (exc.status_code == 404 and is_update):
+                raise StaleWriteError(record.fact_id) from exc   # an updated entity gone since read is stale too
             raise
 
     async def history(self, fact_id: str, *, after_seq: int = -1,

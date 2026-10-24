@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from graph_rag.entities import EntityRecord
 from graph_rag.facts import FactRecord
 from graph_rag.record import (
     ChangeSource, FactChange, WriteCheckError, change_from_state, change_id, change_to_state, check_write, op_marker_id,
@@ -71,3 +73,26 @@ def test_change_document_round_trips():
 def test_ids():
     assert change_id("m1", 4) == "m1:4"
     assert op_marker_id("email:abc:9f") == "op-email:abc:9f"
+
+
+PARK = EntityRecord(entity_id="place-1", type="place", name="Park", handle="park", version="e3")
+
+
+def _parks(n: int, *, start: int = 0) -> list[EntityRecord]:
+    return [replace(PARK, entity_id=f"place-{i}") for i in range(start, start + n)]
+
+
+def test_entity_updates_count_toward_the_100_operations():
+    check_write(_rec(), [_change()], entity_updates=_parks(97))           # marker + change + memory + 97 = 100
+    with pytest.raises(ValueError, match="100"):
+        check_write(_rec(), [_change()], entities=_parks(1, start=200), entity_updates=_parks(97))
+
+
+@pytest.mark.parametrize("entities, updates, message", [
+    ([], [replace(PARK, version=None)], "version"),
+    ([replace(PARK, version=None)], [PARK], "distinct"),
+    ([], [PARK, PARK], "distinct"),
+])
+def test_malformed_entity_updates_are_refused(entities, updates, message):
+    with pytest.raises(ValueError, match=message):
+        check_write(_rec(), [_change()], entities=entities, entity_updates=updates)

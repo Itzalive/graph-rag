@@ -63,21 +63,27 @@ class InMemoryFactBackend:
         return [hit_from_record(r, dist) for dist, r in scored[: request.limit]]
 
     async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
-                           entities: Sequence[EntityRecord] = ()) -> None:
-        check_write(record, changes, entities)
+                           entities: Sequence[EntityRecord] = (),
+                           entity_updates: Sequence[EntityRecord] = ()) -> None:
+        check_write(record, changes, entities, entity_updates)
         op_id = changes[-1].op_id
         if op_id in self._ops:
             raise AlreadyAppliedError(op_id)
         stored = [*changes[:-1], replace(changes[-1], after=fact_state(record))]
         if any(change_id(c.fact_id, c.seq) in self._changes for c in stored) or any(
-                e.entity_id in self._entities for e in entities):
+                e.entity_id in self._entities for e in entities) or any(
+                self._changed_since_read(update) for update in entity_updates):
             raise StaleWriteError(record.fact_id)
         self._ops.add(op_id)
         for change in stored:
             self._changes[change_id(change.fact_id, change.seq)] = change
-        for entity in entities:
+        for entity in (*entities, *entity_updates):
             self._put_entity(entity)
         self._facts[record.fact_id] = record
+
+    def _changed_since_read(self, update: EntityRecord) -> bool:
+        current = self._entities.get(update.entity_id)
+        return current is None or current.version != update.version
 
     async def history(self, fact_id: str, *, after_seq: int = -1,
                       limit: int = HISTORY_DEFAULT_LIMIT) -> list[FactChange]:

@@ -418,3 +418,106 @@ async def test_cosmos_read_entities_is_one_query_over_the_ids():
 async def test_cosmos_read_entities_of_a_document_without_a_handle_raises_the_typed_error():
     with pytest.raises(MissingHandleError):
         await _backend_holding_an_entity_without_a_handle().read_entities(["activity-old"])
+
+
+PARK = EntityRecord(entity_id="place-9", type="place", name="Park", handle="park")
+
+
+async def test_an_entity_update_lands_with_the_memory_when_unchanged_since_read(make_backend):   # AC-R19
+    backend = make_backend()
+    await backend.upsert_entity(BROWNIES)
+    read = await backend.read_entity("activity-0f3a")
+    updated = replace(read, aliases=(*read.aliases, "Brownies pack"))
+    await backend.write_change(_rec(lifespan="lasting", seq=1, about=("activity-0f3a",)),
+                               [_change(1, "op-a", kind="created")], entity_updates=[updated])
+    after = await backend.read_entity("activity-0f3a")
+    assert after.aliases == ("1st Oakfield Brownies", "Brownies pack") and after.version != read.version
+    assert await backend.find_by_alias("activity", "brownies pack") == [after]
+    assert (await backend.read_fact("m1")).about == ("activity-0f3a",)
+
+
+async def test_a_stale_entity_update_writes_nothing_and_applies_once_re_read(make_backend):   # AC-R19, AC-R26
+    backend = make_backend()
+    await backend.upsert_entity(BROWNIES)
+    read = await backend.read_entity("activity-0f3a")
+    await backend.upsert_entity(replace(read, name="Oakfield Brownies"))          # another writer, after our read
+    record = _rec(lifespan="lasting", seq=1, about=("activity-0f3a",), mentions=("place-9",))
+    with pytest.raises(StaleWriteError):
+        await backend.write_change(record, [_change(1, "op-a", kind="created")], entities=[PARK],
+                                   entity_updates=[replace(read, aliases=("Brownies pack",))])
+    assert await backend.read_fact("m1") is None
+    assert await backend.history("m1") == []
+    assert await backend.read_entity("place-9") is None
+    assert (await backend.read_entity("activity-0f3a")).name == "Oakfield Brownies"
+    fresh = await backend.read_entity("activity-0f3a")
+    await backend.write_change(record, [_change(1, "op-a", kind="created")], entities=[PARK],
+                               entity_updates=[replace(fresh, aliases=("Brownies pack",))])   # the marker was not written
+    assert (await backend.read_entity("activity-0f3a")).aliases == ("Brownies pack",)
+
+
+async def test_an_update_of_an_entity_that_does_not_exist_is_stale_and_writes_nothing(make_backend):   # decision 3
+    backend = make_backend()
+    ghost = replace(BROWNIES, version="v1")                                    # never stored in this bucket
+    with pytest.raises(StaleWriteError):
+        await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-g", kind="created")],
+                                   entities=[PARK], entity_updates=[ghost])
+    assert await backend.read_fact("m1") is None
+    assert await backend.read_entities(["activity-0f3a", "place-9"]) == []
+    await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-g", kind="created")])   # no marker
+    assert (await backend.read_fact("m1")).seq == 1
+
+
+async def test_cosmos_a_404_outside_an_entity_update_is_raised_unchanged():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+
+    def fail():
+        raise CosmosBatchOperationError(error_index=1, headers={}, status_code=404, message="not found",
+                                        operation_responses=[])
+
+    container.execute_item_batch = lambda **kwargs: fail()
+    with pytest.raises(CosmosBatchOperationError) as exc:
+        await _write(backend, 1, "op-1")
+    assert exc.value.status_code == 404
+
+
+@pytest.mark.parametrize("updates, message", [
+    ([replace(BROWNIES, version=None)], "version"),
+    ([replace(BROWNIES, entity_id=f"place-{i}", version="v") for i in range(98)], "100"),
+])
+async def test_a_malformed_entity_update_is_refused_on_both(make_backend, updates, message):
+    backend = make_backend()
+    with pytest.raises(ValueError, match=message):
+        await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-u", kind="created")],
+                                   entity_updates=updates)
+    assert await backend.read_fact("m1") is None
+
+
+async def test_cosmos_entity_update_is_a_replace_conditional_on_the_etag_read():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.upsert_entity(BROWNIES)
+    read = await backend.read_entity("activity-0f3a")
+    await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-a", kind="created")],
+                               entity_updates=[replace(read, aliases=("Brownies pack",))])
+    [batch] = container.batches
+    [operation] = [op for op in batch if op[0] == "replace"]
+    item_id, body = operation[1]
+    assert (item_id, operation[2]) == ("activity-0f3a", {"if_match_etag": read.version})
+    assert body["handle"] == "brownies" and "version" not in body and "_etag" not in body
+    assert body["family_id"] == "fam1" and body["category"] == "FACTS"
+    assert batch[0][0] == "create" and batch[-1][0] == "upsert"     # marker first, the memory last
+
+
+async def test_cosmos_a_412_inside_the_batch_is_stale_and_writes_nothing():   # a write between read and batch
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.upsert_entity(BROWNIES)
+    read = await backend.read_entity("activity-0f3a")
+    key = ("fam1", "shared", "FACTS", "activity-0f3a")
+    container.before_batch = lambda: container._put(dict(container.docs[key]))      # a new etag, same content
+    with pytest.raises(StaleWriteError):
+        await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-a", kind="created")],
+                                   entity_updates=[replace(read, aliases=("Brownies pack",))])
+    assert await backend.read_fact("m1") is None
+    assert ("fam1", "shared", "FACTS", "op-op-a") not in container.docs
