@@ -79,9 +79,8 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
 `graph_rag.entities.EntityRecord(entity_id, type, name, handle, aliases, identifiers, seq, version)` lives in the same
 bucket (`doc_type: "entity"`). `handle` is required: the caller's readable id for the entity; it is not an alias key.
 `version` is set by every read (Cosmos: the document's `_etag`; in memory: a counter), moves on every write, is never
-stored and is not part of equality. An entity document without a handle (written before handles) raises
-`MissingHandleError` (a `ValueError` naming the entity id) on every read; there is no compatibility layer: reset the
-store that holds it. `upsert_entity`, `read_entity`, `read_entities(ids)` (the entities with those ids in
+stored and is not part of equality. An entity document without a handle raises
+`MissingHandleError` (a `ValueError` naming the entity id) on every read: reset the store that holds it. `upsert_entity`, `read_entity`, `read_entities(ids)` (the entities with those ids in
 one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueError` above), `list_entities(type=None)`,
 `find_by_alias(type, alias)` (exact, case-insensitive, over the name and aliases) and `find_by_identifier(kind, value)`
 (case-insensitive value). Types, handles and ids are the caller's.

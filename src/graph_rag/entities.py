@@ -62,12 +62,11 @@ def entity_to_state(entity: EntityRecord) -> dict[str, Any]:
 
 
 class MissingHandleError(ValueError):
-    """An entity document with no handle: it was written before entities had handles. There is no compatibility layer;
-    the store holding it must be reset. The message holds the entity id only (ids never hold names)."""
+    """An entity document with no handle: it cannot be read, and the store holding it must be reset. The message holds
+    the entity id only (ids never hold names)."""
 
     def __init__(self, entity_id: str) -> None:
-        super().__init__(f"entity {entity_id} has no handle: it was written before entities had handles; "
-                         "reset the store that holds it")
+        super().__init__(f"entity {entity_id} has no handle; reset the store that holds it")
         self.entity_id = entity_id
 
 
