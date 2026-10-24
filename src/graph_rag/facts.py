@@ -244,7 +244,8 @@ def hit_from_record(record: FactRecord, score: float) -> FactSearchHit:
         confidence=record.confidence, valid_until=record.valid_until, extras=record.extras, kind=record.kind,
         holder=record.holder, lifespan=record.lifespan, valid_from=record.valid_from,
         validity_basis=record.validity_basis, learned_at=record.learned_at, last_changed_at=record.last_changed_at,
-        last_confirmed_at=record.last_confirmed_at, about=record.about, mentions=record.mentions, topics=record.topics, seq=record.seq,
+        last_confirmed_at=record.last_confirmed_at, about=record.about, mentions=record.mentions,
+        topics=record.topics, seq=record.seq,
     )
 
 

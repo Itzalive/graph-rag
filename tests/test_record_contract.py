@@ -338,7 +338,10 @@ async def test_an_entity_created_with_a_memory_is_read_with_a_version(make_backe
     backend = make_backend()
     await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-a", kind="created")],
                                entities=[BROWNIES])
-    assert (await backend.read_entity("activity-0f3a")).version is not None
+    first = await backend.read_entity("activity-0f3a")
+    assert first.version is not None
+    await backend.upsert_entity(replace(first, aliases=("x",)))
+    assert (await backend.read_entity("activity-0f3a")).version != first.version
 
 
 async def test_cosmos_entity_version_is_the_documents_etag():
@@ -407,6 +410,8 @@ async def test_cosmos_read_entities_is_one_query_over_the_ids():
     assert "ARRAY_CONTAINS(@ids, c.id)" in query["query"] and "c.doc_type = 'entity'" in query["query"]
     assert query["parameters"] == [{"name": "@ids", "value": ["activity-0f3a", "x"]}]
     await backend.read_entities([])
+    with pytest.raises(ValueError):
+        await backend.read_entities([f"x{i}" for i in range(201)])
     assert len(queries) == 1
 
 
