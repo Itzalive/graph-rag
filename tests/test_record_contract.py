@@ -151,6 +151,42 @@ async def test_the_same_request_again_is_already_applied(make_backend):   # AC-M
     assert [c.seq for c in await backend.history("m1")] == [1]
 
 
+async def test_op_applied_says_whether_a_request_was_written(make_backend):   # AC-M3: ask before doing the work
+    backend = make_backend()
+    assert await backend.op_applied("tool-1") is False
+    await _write(backend, 1, "tool-1")
+    assert await backend.op_applied("tool-1") is True
+    assert await backend.op_applied("tool-2") is False
+    with pytest.raises(StaleWriteError):                     # a refused write leaves no marker
+        await _write(backend, 1, "tool-2", body="Alice swims on Fridays")
+    assert await backend.op_applied("tool-2") is False
+
+
+async def test_op_applied_is_per_bucket_and_reads_only_markers():
+    container = FakeContainer()
+    fam1 = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    fam2 = CosmosFactBackend(container=container, family_id="fam2", clock=lambda: NOW)
+    await _write(fam1, 1, "tool-1")
+    assert (await fam1.op_applied("tool-1"), await fam2.op_applied("tool-1")) == (True, False)
+    await fam2.write_change(_rec(fact_id="op-tool-9", lifespan="fading", seq=1),
+                            [_change(1, "tool-3", kind="created", fact_id="op-tool-9")])
+    assert await fam2.op_applied("tool-9") is False           # a memory whose id looks like a marker is not one
+
+
+async def test_cosmos_op_applied_is_one_point_read():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    reads, real = [], container.read_item
+
+    def counting(item, partition_key):
+        reads.append((item, tuple(partition_key)))
+        return real(item, partition_key)
+
+    container.read_item = counting
+    assert await backend.op_applied("tool-1") is False
+    assert reads == [("op-tool-1", ("fam1", "shared", "FACTS"))]
+
+
 @pytest.mark.parametrize("fields, code", [
     (dict(lifespan="dated", seq=1), "W1"),
     (dict(lifespan="lasting", valid_until=NOW + timedelta(days=1), validity_basis="stated", seq=1), "W2"),

@@ -201,6 +201,11 @@ class CosmosFactBackend:
                 raise StaleWriteError(record.fact_id) from exc   # an updated entity gone since read is stale too
             raise
 
+    async def op_applied(self, op_id: str) -> bool:
+        """Whether a change with this op id was written: its marker exists in this bucket (one point read)."""
+        doc = await self._read_raw(op_marker_id(op_id))
+        return doc is not None and doc.get("doc_type") == "fact_op"
+
     async def history(self, fact_id: str, *, after_seq: int = -1,
                       limit: int = HISTORY_DEFAULT_LIMIT) -> list[FactChange]:
         check_history_limit(limit)

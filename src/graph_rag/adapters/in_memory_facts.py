@@ -81,6 +81,9 @@ class InMemoryFactBackend:
             self._put_entity(entity)
         self._facts[record.fact_id] = record
 
+    async def op_applied(self, op_id: str) -> bool:
+        return op_id in self._ops
+
     def _changed_since_read(self, update: EntityRecord) -> bool:
         current = self._entities.get(update.entity_id)
         return current is None or current.version != update.version

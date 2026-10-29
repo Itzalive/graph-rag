@@ -68,7 +68,9 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
 - A change record's id is `<fact_id>:<seq>`. A writer reads the memory's `seq` and writes `seq + 1`; if another write
   took it, created an entity this write creates, or changed or removed an entity this write updates, `StaleWriteError` is raised; nothing is written: re-read and apply once more.
 - `op_id` names the request. If its marker exists the request was applied before: `AlreadyAppliedError`, which callers
-  treat as success with nothing written. Markers are kept.
+  treat as success with nothing written. Markers are kept. `op_applied(op_id)` says whether a change with that op id
+  was written (its marker exists in the bucket; on Cosmos one point read), so a caller can skip work a repeated
+  request would only throw away.
 - `history(fact_id, *, after_seq=-1, limit=100)` returns change records in `seq` order, at most `limit` (1–500); page
   by passing the last `seq` received.
 - `set_vectors(fact_id, vectors, *, expected_seq)` fills a memory's vectors only if it still has `expected_seq` (and, on
