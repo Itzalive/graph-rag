@@ -70,7 +70,9 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
 - `op_id` names the request. If its marker exists the request was applied before: `AlreadyAppliedError`, which callers
   treat as success with nothing written. Markers are kept. `op_applied(op_id)` says whether a change with that op id
   was written (its marker exists in the bucket; on Cosmos one point read), so a caller can skip work a repeated
-  request would only throw away.
+  request would only throw away. A marker records the `seq` its write left: `op_marker(op_id)` returns `OpMarker(seq)`
+  for a written marker (`seq` None for a marker that has no `seq`) or None when it was never written, in the same one
+  point read, so a repeated request learns the version it left.
 - `history(fact_id, *, after_seq=-1, limit=100)` returns change records in `seq` order, at most `limit` (1–500); page
   by passing the last `seq` received.
 - `set_vectors(fact_id, vectors, *, expected_seq)` fills a memory's vectors only if it still has `expected_seq` (and, on
