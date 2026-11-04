@@ -11,7 +11,7 @@ from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.entities import EntityRecord, Identifier, MissingHandleError
 from graph_rag.facts import FactRecord, FactSearchRequest, fact_state
-from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, StaleWriteError, WriteCheckError
+from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, OpMarker, StaleWriteError, WriteCheckError
 from cosmos_fake import FakeContainer  # tests/ is on sys.path (no __init__.py; pytest prepend import mode)
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
@@ -578,3 +578,12 @@ async def test_a_marker_without_a_seq_is_a_marker_with_no_version():   # a marke
     marker = await backend.op_marker("tool-1")
     assert marker is not None and marker.seq is None
     assert await backend.op_applied("tool-1") is True
+
+
+@pytest.mark.parametrize("change, expected", [({"doc_type": "fact"}, None), ({"seq": True}, OpMarker(None))])
+async def test_op_marker_reads_only_a_marker_and_only_a_number_as_its_seq(change, expected):   # xz59.13.4 rule 1
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await _write(backend, 1, "tool-1")
+    container.upsert_item({**container.read_item("op-tool-1", ["fam1", "shared", "FACTS"]), **change})
+    assert await backend.op_marker("tool-1") == expected
