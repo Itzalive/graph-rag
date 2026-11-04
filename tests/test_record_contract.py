@@ -557,3 +557,24 @@ async def test_cosmos_a_412_inside_the_batch_is_stale_and_writes_nothing():   # 
                                    entity_updates=[replace(read, aliases=("Brownies pack",))])
     assert await backend.read_fact("m1") is None
     assert ("fam1", "shared", "FACTS", "op-op-a") not in container.docs
+
+
+async def test_the_op_marker_records_the_seq_it_wrote(make_backend):   # claude-assistant-xz59.13.4 rule 1
+    backend = make_backend()
+    assert await backend.op_marker("tool-1") is None
+    await _write(backend, 1, "tool-1")
+    await _write(backend, 2, "tool-2", body="Alice swims on Fridays")
+    assert (await backend.op_marker("tool-1")).seq == 1
+    assert (await backend.op_marker("tool-2")).seq == 2
+    assert await backend.op_marker("tool-3") is None
+
+
+async def test_a_marker_without_a_seq_is_a_marker_with_no_version():   # a marker written before markers had seq
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await _write(backend, 1, "tool-1")
+    stored = container.read_item("op-tool-1", ["fam1", "shared", "FACTS"])
+    container.upsert_item({k: v for k, v in stored.items() if k != "seq"})
+    marker = await backend.op_marker("tool-1")
+    assert marker is not None and marker.seq is None
+    assert await backend.op_applied("tool-1") is True

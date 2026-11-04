@@ -46,6 +46,12 @@ class AlreadyAppliedError(Exception):
     """This request (its op_id) was applied before: treat as success with nothing written."""
 
 
+@dataclass(frozen=True)
+class OpMarker:
+    """An applied request's marker: the seq its write left, None for a marker written before markers kept it."""
+    seq: int | None
+
+
 class WriteCheckError(ValueError):
     """A write that breaks a write check (W1–W4); `code` names the rule. Nothing is written."""
 
@@ -150,6 +156,7 @@ class RecordedFactBackend(FactBackend, Protocol):
                            entities: Sequence[EntityRecord] = (),
                            entity_updates: Sequence[EntityRecord] = ()) -> None: ...
     async def op_applied(self, op_id: str) -> bool: ...
+    async def op_marker(self, op_id: str) -> OpMarker | None: ...
     async def history(self, fact_id: str, *, after_seq: int = -1,
                       limit: int = HISTORY_DEFAULT_LIMIT) -> list[FactChange]: ...
     async def set_vectors(self, fact_id: str, vectors: tuple[float, ...], *, expected_seq: int) -> bool: ...

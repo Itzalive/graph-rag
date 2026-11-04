@@ -12,7 +12,8 @@ from graph_rag.facts import (
     FactRecord, FactSearchHit, FactSearchRequest, cosine_distance, fact_state, hit_from_record, is_listed,
 )
 from graph_rag.record import (
-    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, StaleWriteError, change_id, check_history_limit, check_write,
+    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, OpMarker, StaleWriteError, change_id,
+    check_history_limit, check_write,
 )
 
 
@@ -23,7 +24,7 @@ class InMemoryFactBackend:
     def __init__(self, *, clock: Clock = utc_now) -> None:
         self._facts: dict[str, FactRecord] = {}
         self._changes: dict[str, FactChange] = {}
-        self._ops: set[str] = set()
+        self._ops: dict[str, int] = {}
         self._entities: dict[str, EntityRecord] = {}
         self._entity_versions = itertools.count(1)
         self._clock = clock
@@ -74,7 +75,7 @@ class InMemoryFactBackend:
                 e.entity_id in self._entities for e in entities) or any(
                 self._changed_since_read(update) for update in entity_updates):
             raise StaleWriteError(record.fact_id)
-        self._ops.add(op_id)
+        self._ops[op_id] = record.seq
         for change in stored:
             self._changes[change_id(change.fact_id, change.seq)] = change
         for entity in (*entities, *entity_updates):
@@ -83,6 +84,9 @@ class InMemoryFactBackend:
 
     async def op_applied(self, op_id: str) -> bool:
         return op_id in self._ops
+
+    async def op_marker(self, op_id: str) -> OpMarker | None:
+        return OpMarker(self._ops[op_id]) if op_id in self._ops else None
 
     def _changed_since_read(self, update: EntityRecord) -> bool:
         current = self._entities.get(update.entity_id)

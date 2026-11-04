@@ -14,7 +14,7 @@ from graph_rag.facts import (
     SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, fact_state, hit_from_state, record_from_state,
 )
 from graph_rag.record import (
-    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, StaleWriteError, change_from_state, change_to_state,
+    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, OpMarker, StaleWriteError, change_from_state, change_to_state,
     check_history_limit, check_write, op_marker_id,
 )
 
@@ -181,7 +181,8 @@ class CosmosFactBackend:
         # The SDK's batch forms (azure/cosmos/_base.py _format_batch_operations): (kind, (body,)) for create and
         # upsert; ("replace", (id, body), {"if_match_etag": etag}) for a conditional replace.
         operations: list[tuple[Any, ...]] = [
-            ("create", (self._stamp({"id": marker, "doc_type": "fact_op", "op_id": op_id, "fact_id": record.fact_id}),)),
+            ("create", (self._stamp({"id": marker, "doc_type": "fact_op", "op_id": op_id, "fact_id": record.fact_id,
+                                    "seq": record.seq}),)),
             *[("create", (self._stamp(change_to_state(change)),)) for change in stored],
             *[("create", (self._stamp(entity_to_state(entity)),)) for entity in entities],
             *[("replace", (update.entity_id, self._stamp(entity_to_state(update))), {"if_match_etag": update.version})
@@ -205,6 +206,14 @@ class CosmosFactBackend:
         """Whether a change with this op id was written: its marker exists in this bucket (one point read)."""
         doc = await self._read_raw(op_marker_id(op_id))
         return doc is not None and doc.get("doc_type") == "fact_op"
+
+    async def op_marker(self, op_id: str) -> OpMarker | None:
+        """The marker of a change with this op id, or None when it was never written (one point read)."""
+        doc = await self._read_raw(op_marker_id(op_id))
+        if doc is None or doc.get("doc_type") != "fact_op":
+            return None
+        seq = doc.get("seq")
+        return OpMarker(seq if isinstance(seq, int) and not isinstance(seq, bool) else None)
 
     async def history(self, fact_id: str, *, after_seq: int = -1,
                       limit: int = HISTORY_DEFAULT_LIMIT) -> list[FactChange]:
