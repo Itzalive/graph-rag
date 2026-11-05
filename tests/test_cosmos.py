@@ -218,3 +218,15 @@ async def test_read_returns_recorded_fields_typed_and_not_in_extras():
     assert (record.kind, record.seq, record.holder, record.about, record.mentions) == (
         "fact", 4, Holder("kerwen"), ("pet-1",), ("place-2",))
     assert record.extras == {"calc": {"rule": "age"}}
+
+
+async def test_search_sql_leaves_out_ids_at_a_version_through_one_parameter():   # claude-assistant-xz59.13.4
+    backend, container = _backend()
+    container.query_items.return_value = iter([])
+    await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5,
+                                                 exclude_versions=(("f1", 3), ('f"2', 0))))
+    query: str = container.query_items.call_args[1]["query"]
+    params = {p["name"]: p["value"] for p in container.query_items.call_args[1]["parameters"]}
+    assert 'ARRAY_CONTAINS(@exclude_keys, CONCAT(c.id, ":", ToString(IIF(IS_DEFINED(c.seq), c.seq, 0)))) = false' in query
+    assert params["@exclude_keys"] == ["f1:3", 'f"2:0']
+    assert "f1:3" not in query and 'f"2:0' not in query and "@exclude_ids" not in query

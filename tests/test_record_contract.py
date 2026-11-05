@@ -587,3 +587,19 @@ async def test_op_marker_reads_only_a_marker_and_only_a_number_as_its_seq(change
     await _write(backend, 1, "tool-1")
     container.upsert_item({**container.read_item("op-tool-1", ["fam1", "shared", "FACTS"]), **change})
     assert await backend.op_marker("tool-1") == expected
+
+
+async def test_a_search_leaves_out_a_memory_only_at_the_version_it_names(make_backend):   # claude-assistant-xz59.13.4
+    backend = make_backend()
+    for fact_id, seq in (("m0", 0), ("m3", 3), ("m5", 5)):
+        await backend.upsert_fact(_rec(fact_id, f"Alice swims {fact_id}", seq=seq, vector_embeddings=(1.0, 0.0)))
+
+    async def ids(*exclude: tuple[str, int]) -> list[str]:
+        hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=10,
+                                                            exclude_versions=exclude))
+        return sorted(h.fact_id for h in hits)
+
+    assert await ids() == ["m0", "m3", "m5"]
+    assert await ids(("m0", 0), ("m3", 3)) == ["m5"]                           # a memory with no seq is at 0
+    assert await ids(("m0", 1), ("m3", 2), ("m5", 6)) == ["m0", "m3", "m5"]    # another version: shown again
+    assert await ids(("m9", 0)) == ["m0", "m3", "m5"]

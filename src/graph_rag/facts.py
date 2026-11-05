@@ -50,6 +50,8 @@ class FactSearchRequest:
     query_vector: tuple[float, ...]
     limit: int
     exclude_ids: tuple[str, ...] = ()
+    # (id, seq) pairs: a memory is left out only at that seq, a memory with no seq counting as 0 (claude-assistant-xz59.13.4)
+    exclude_versions: tuple[tuple[str, int], ...] = ()
     include_expired: bool = False
     include_future: bool = False
 

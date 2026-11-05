@@ -49,9 +49,10 @@ class InMemoryFactBackend:
             raise ValueError("limit must not exceed 100")
         now = read_clock(self._clock)
         exclude = set(request.exclude_ids)
+        excluded_versions = set(request.exclude_versions)
         scored: list[tuple[float, FactRecord]] = []
         for record in self._facts.values():
-            if record.fact_id in exclude:
+            if record.fact_id in exclude or (record.fact_id, record.seq) in excluded_versions:
                 continue
             if not is_listed(record, now, include_expired=request.include_expired,
                              include_future=request.include_future):

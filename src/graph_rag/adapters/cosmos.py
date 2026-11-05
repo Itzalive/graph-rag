@@ -39,6 +39,8 @@ CLAUSE_NOT_PURGED = "(NOT IS_DEFINED(c.purged_at) OR IS_NULL(c.purged_at))"
 CLAUSE_NOT_EXPIRED = "(NOT IS_DEFINED(c.valid_until) OR IS_NULL(c.valid_until) OR c.valid_until > @now)"
 CLAUSE_STARTED = "(NOT IS_DEFINED(c.valid_from) OR IS_NULL(c.valid_from) OR c.valid_from <= @now)"
 CLAUSE_NOT_EXCLUDED = "ARRAY_CONTAINS(@exclude_ids, c.id) = false"
+# A memory left out only at the version named: `<id>:<seq>` keys, a memory with no seq read as 0.
+CLAUSE_NOT_EXCLUDED_VERSION = 'ARRAY_CONTAINS(@exclude_keys, CONCAT(c.id, ":", ToString(IIF(IS_DEFINED(c.seq), c.seq, 0)))) = false'
 CLAUSE_CHANGES = "c.doc_type = 'fact_change'"
 CLAUSE_CHANGE_OF_FACT = "c.fact_id = @fact_id"
 CLAUSE_AFTER_SEQ = "c.seq > @after"
@@ -136,6 +138,10 @@ class CosmosFactBackend:
         if request.exclude_ids:
             filters.append(CLAUSE_NOT_EXCLUDED)
             params.append({"name": "@exclude_ids", "value": list(request.exclude_ids)})
+        if request.exclude_versions:
+            filters.append(CLAUSE_NOT_EXCLUDED_VERSION)
+            params.append({"name": "@exclude_keys",
+                           "value": [f"{fact_id}:{seq}" for fact_id, seq in request.exclude_versions]})
         where_clause = " AND ".join(filters)
         # Named fields, never `c`: each vector_embeddings is ~22 KB of JSON that the hit never uses. A field that is not
         # listed in _SEARCH_FIELDS does not reach FactSearchHit.extras; add it there when a new fact field is introduced.

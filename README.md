@@ -19,7 +19,7 @@ uv sync
 
 `graph_rag.facts` defines the `FactBackend` protocol (`upsert_fact`, `read_fact`,
 `list_facts(*, include_expired=False, include_future=False)`, `search_facts`) and its records: `FactRecord` (a stored
-fact), `FactSearchRequest` (a query vector, a limit of at most 100, ids to exclude, and whether to include expired facts
+fact), `FactSearchRequest` (a query vector, a limit of at most 100, ids to exclude, (id, seq) pairs to exclude only at that version (`exclude_versions`, a missing seq counting as 0), and whether to include expired facts
 (`include_expired`) and not-yet-valid ones (`include_future`)) and `FactSearchHit` (a fact with its score, a cosine distance: 0 is identical, lower is closer; hits come closest
 first). Two adapters implement it:
 
