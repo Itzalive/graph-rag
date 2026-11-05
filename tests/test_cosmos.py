@@ -230,3 +230,12 @@ async def test_search_sql_leaves_out_ids_at_a_version_through_one_parameter():  
     assert 'ARRAY_CONTAINS(@exclude_keys, CONCAT(c.id, ":", ToString(IIF(IS_DEFINED(c.seq), c.seq, 0)))) = false' in query
     assert params["@exclude_keys"] == ["f1:3", 'f"2:0']
     assert "f1:3" not in query and 'f"2:0' not in query and "@exclude_ids" not in query
+
+
+async def test_search_sql_sends_no_version_clause_when_none_is_named():   # claude-assistant-xz59.13.4
+    backend, container = _backend()
+    container.query_items.return_value = iter([])
+    await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5, exclude_ids=("f1",)))
+    query: str = container.query_items.call_args[1]["query"]
+    names = {p["name"] for p in container.query_items.call_args[1]["parameters"]}
+    assert "@exclude_keys" not in query and "@exclude_keys" not in names and "@exclude_ids" in query
