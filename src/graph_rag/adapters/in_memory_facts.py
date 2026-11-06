@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import itertools
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import replace
 
 from graph_rag.clock import Clock, read_clock, utc_now
 from graph_rag.entities import (
-    EntityRecord, alias_key, alias_keys, check_entity_ids, identifier_key, identifier_keys,
+    ALIASES_MAX_LIMIT, ALIASES_MAX_READ, EntityRecord, alias_key, alias_keys, alias_lookup_keys, check_alias_limit,
+    check_entity_ids, identifier_key, identifier_keys, rank_alias_matches,
 )
 from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
@@ -141,6 +142,23 @@ class InMemoryFactBackend:
 
     async def find_by_alias(self, type: str, alias: str) -> list[EntityRecord]:
         return [e for e in await self.list_entities(type=type) if alias_key(alias) in alias_keys(e)]
+
+    async def find_by_aliases(self, keys: Iterable[str], *, limit: int = ALIASES_MAX_LIMIT) -> list[EntityRecord]:
+        check_alias_limit(limit)
+        used, given = alias_lookup_keys(keys)
+        if given > len(used):
+            self._events.count("aliases.keys_capped", given=given, used=len(used))
+        if not used:
+            return []
+        wanted = set(used)
+        matches = [e for e in await self.list_entities() if wanted.intersection(alias_keys(e))]
+        if len(matches) > ALIASES_MAX_READ:
+            matches = matches[:ALIASES_MAX_READ]
+            self._events.count("aliases.read_capped")
+        ranked = rank_alias_matches(matches, used)
+        if len(ranked) > limit:
+            self._events.count("aliases.limit_reached", limit=limit)
+        return ranked[:limit]
 
     async def find_by_identifier(self, kind: str, value: str) -> list[EntityRecord]:
         return [e for e in await self.list_entities() if identifier_key(kind, value) in identifier_keys(e)]
