@@ -16,7 +16,7 @@ from graph_rag.facts import (
 )
 from graph_rag.record import (
     HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, OpMarker, StaleWriteError, change_id,
-    check_history_limit, check_write,
+    check_entity_replacements, check_history_limit, check_write,
 )
 
 
@@ -130,6 +130,14 @@ class InMemoryFactBackend:
 
     async def upsert_entity(self, entity: EntityRecord) -> None:
         self._put_entity(entity)
+
+    async def replace_entities(self, updates: Sequence[EntityRecord]) -> None:
+        check_entity_replacements(updates)
+        for update in updates:
+            if self._changed_since_read(update):
+                raise StaleWriteError(update.entity_id)
+        for update in updates:
+            self._put_entity(update)
 
     async def read_entity(self, entity_id: str) -> EntityRecord | None:
         return self._entities.get(entity_id)

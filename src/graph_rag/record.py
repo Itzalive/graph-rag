@@ -39,7 +39,8 @@ class FactChange:
 
 
 class StaleWriteError(Exception):
-    """Another write took this change's seq, or created an entity this write creates: re-read and apply once more."""
+    """Another write took this change's seq, or created an entity this write creates, or an entity `replace_entities`
+    updates moved on or is gone: re-read and apply once more."""
 
 
 class AlreadyAppliedError(Exception):
@@ -118,6 +119,17 @@ def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Seq
         raise WriteCheckError("W3")
     if record.seq != changes[-1].seq:
         raise WriteCheckError("W4")
+
+
+def check_entity_replacements(updates: Sequence[EntityRecord]) -> None:
+    """At most MAX_BATCH_OPERATIONS updates, distinct ids, each carrying the version it read; otherwise ValueError."""
+    if len(updates) > MAX_BATCH_OPERATIONS:
+        raise ValueError(f"replace_entities takes at most {MAX_BATCH_OPERATIONS} updates")
+    ids = [update.entity_id for update in updates]
+    if len(set(ids)) != len(ids):
+        raise ValueError("entity ids must be distinct")
+    if any(update.version is None for update in updates):
+        raise ValueError("an entity update must carry the version it read")
 
 
 def change_to_state(change: FactChange) -> dict[str, Any]:
