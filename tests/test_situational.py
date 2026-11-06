@@ -117,6 +117,29 @@ async def test_no_returned_record_carries_vectors(bucket):   # AC-R1
     assert records[0].situation == EMAIL
 
 
+async def test_unsituated_reads_take_current_memories_only(bucket):   # AC-R1
+    await _seed(
+        bucket,
+        _mem("u-live", situation=None),
+        _mem("u-deleted", situation=None, deleted=True),
+        _mem("u-forgotten", situation=None, forgotten_at=NOW),
+        _mem("u-purged", situation=None, purged_at=NOW),
+        _mem("u-expired", situation=None, valid_until=NOW - timedelta(days=1)),
+        _mem("u-future", situation=None, valid_from=NOW + timedelta(days=1)),
+    )
+    assert await _ids(bucket, "email", [], [], unsituated_kinds=("instruction",)) == ["u-live"]
+
+
+@pytest.mark.parametrize("kind", ["memory", "cosmos"])
+async def test_now_is_the_backends_clock(kind):   # §2.1: "now" is the backend's clock
+    later = datetime(2031, 1, 1, tzinfo=UTC)
+    backend = (InMemoryFactBackend(clock=lambda: later) if kind == "memory" else
+               CosmosFactBackend(container=FakeContainer(), family_id="fam1", clock=lambda: later))
+    await backend.upsert_fact(_mem("ended", valid_until=later - timedelta(days=1)))
+    await backend.upsert_fact(_mem("started", valid_from=later - timedelta(days=1)))
+    assert [r.fact_id for r in await backend.situational("email", [], [])] == ["started"]
+
+
 @pytest.mark.parametrize("args, kwargs", [
     (("", [], []), {}),                                                   # no channel
     (("email", [], []), {"limit": 0}),
@@ -171,6 +194,23 @@ async def test_cosmos_situational_reads_named_fields_in_the_indexed_order():
     unsituated_query, unsituated_params, _ = container.queries[-1]
     assert "(NOT IS_DEFINED(c.situation) OR IS_NULL(c.situation))" in unsituated_query
     assert unsituated_params["@kinds"] == ["instruction"] and len(container.queries) == 3
+
+
+async def test_cosmos_situational_sends_types_and_entity_ids_distinct_and_sorted():
+    container = _Spy()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.situational("email", ["ORDERS", "GENERAL", "ORDERS"], ["ent-2", "ent-1", "ent-2"])
+    [(_, params, _)] = container.queries
+    assert (params["@types"], params["@entity_ids"]) == (["GENERAL", "ORDERS"], ["ent-1", "ent-2"])
+
+
+async def test_cosmos_a_null_situation_reads_as_unsituated():   # §2.1: no situation is missing or null
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.upsert_fact(_mem("u-null", situation=None))
+    container.docs[("fam1", "shared", "FACTS", "u-null")]["situation"] = None
+    assert [r.fact_id for r in await backend.situational("email", [], [], unsituated_kinds=("instruction",))] == [
+        "u-null"]
 
 
 async def test_cosmos_situational_sends_values_as_parameters_never_in_the_query():   # trust boundary row 1

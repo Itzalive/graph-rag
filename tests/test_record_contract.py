@@ -356,6 +356,14 @@ async def test_about_and_mentions_round_trip_through_write_read_search_and_histo
     assert (change.after["about"], change.after["mentions"]) == (["ent-a"], ["ent-b", "ent-c"])
 
 
+async def test_search_distance_is_the_cosine_distance_on_both(make_backend):
+    backend = make_backend()
+    await backend.upsert_fact(_rec("near", vector_embeddings=(1.0, 0.0)))
+    await backend.upsert_fact(_rec("far", vector_embeddings=(0.0, 1.0)))
+    hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
+    assert [(h.fact_id, h.score) for h in hits] == [("near", pytest.approx(0.0)), ("far", pytest.approx(1.0))]
+
+
 async def test_entity_reads_carry_the_handle_and_a_version_that_moves_on_every_write(make_backend):   # AC-R19
     backend = make_backend()
     await backend.upsert_entity(BROWNIES)
