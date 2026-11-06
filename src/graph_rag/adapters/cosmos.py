@@ -18,7 +18,7 @@ from graph_rag.facts import (
 )
 from graph_rag.record import (
     HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, OpMarker, StaleWriteError, change_from_state, change_to_state,
-    check_history_limit, check_write, op_marker_id,
+    check_entity_replacements, check_history_limit, check_write, op_marker_id,
 )
 
 
@@ -288,6 +288,25 @@ class CosmosFactBackend:
     async def upsert_entity(self, entity: EntityRecord) -> None:
         doc = self._stamp(entity_to_state(entity))
         await asyncio.to_thread(lambda: self._container.upsert_item(doc))
+
+    async def replace_entities(self, updates: Sequence[EntityRecord]) -> None:
+        """Replace these entities in one transactional batch, each only if its etag is still the `version` it carries;
+        all or none. A 412 or 404 on any replace raises StaleWriteError naming that entity; any other failure is
+        raised unchanged."""
+        from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
+
+        check_entity_replacements(updates)
+        if not updates:
+            return
+        operations = [("replace", (u.entity_id, self._stamp(entity_to_state(u))), {"if_match_etag": u.version})
+                      for u in updates]
+        try:
+            await asyncio.to_thread(
+                lambda: self._container.execute_item_batch(batch_operations=operations, partition_key=self._pk))
+        except CosmosBatchOperationError as exc:
+            if exc.status_code in (404, 412) and 0 <= exc.error_index < len(updates):
+                raise StaleWriteError(updates[exc.error_index].entity_id) from exc
+            raise
 
     async def read_entity(self, entity_id: str) -> EntityRecord | None:
         doc = await self._read_raw(entity_id)

@@ -15,7 +15,7 @@ from cosmos_fake import FakeContainer
 NOW = datetime(2026, 11, 6, 12, 0, tzinfo=UTC)
 
 
-@pytest.fixture(params=["memory"])   # Task 9 adds "cosmos"
+@pytest.fixture(params=["memory", "cosmos"])
 def make(request):
     container = FakeContainer()
 
@@ -107,3 +107,30 @@ async def test_malformed_updates_are_refused_before_anything_is_written(make, up
 
 def _no_write(*args, **kwargs):
     raise AssertionError("nothing may be sent")
+
+
+async def test_cosmos_replace_entities_is_one_conditional_batch():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    ann, bob = await _stored(backend, _entity("person-1", "Ann"), _entity("person-2", "Bob"))
+    await backend.replace_entities([replace(ann, aliases=("Annie",)), bob])
+    [batch] = container.batches
+    assert [(op[0], op[1][0], op[2]) for op in batch] == [("replace", "person-1", {"if_match_etag": ann.version}),
+                                                          ("replace", "person-2", {"if_match_etag": bob.version})]
+    assert batch[0][1][1]["family_id"] == "fam1" and batch[0][1][1]["alias_keys"] == ["ann", "annie"]
+
+
+async def test_cosmos_other_batch_failures_are_raised_unchanged():
+    from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
+
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    [ann] = await _stored(backend, _entity("person-1", "Ann"))
+
+    def fail(**kwargs):
+        raise CosmosBatchOperationError(error_index=0, headers={}, status_code=429, message="busy",
+                                        operation_responses=[])
+
+    container.execute_item_batch = fail
+    with pytest.raises(CosmosBatchOperationError):
+        await backend.replace_entities([ann])
