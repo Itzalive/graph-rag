@@ -71,6 +71,24 @@ async def test_a_batch_whose_second_update_is_stale_leaves_the_first_unchanged(m
     assert (await backend.read_entity("person-2")).aliases == ("Robert",)
 
 
+async def test_a_batch_whose_first_update_is_stale_names_it_and_writes_nothing(make):   # AC-R17b
+    backend = make()
+    ann, bob = await _stored(backend, _entity("person-1", "Ann"), _entity("person-2", "Bob"))
+    await backend.upsert_entity(replace(ann, aliases=("Annie",)))     # ann moves on after it was read
+    with pytest.raises(StaleWriteError) as exc:
+        await backend.replace_entities([replace(ann, aliases=("Nan",)), replace(bob, aliases=("Bobby",))])
+    assert str(exc.value) == "person-1"
+    assert await backend.read_entity("person-2") == bob
+
+
+async def test_an_update_at_a_version_it_never_read_is_stale(make):
+    backend = make()
+    [ann] = await _stored(backend, _entity("person-1", "Ann"))
+    with pytest.raises(StaleWriteError):
+        await backend.replace_entities([replace(ann, aliases=("Annie",), version=ann.version + "0")])
+    assert await backend.read_entity("person-1") == ann
+
+
 async def test_an_update_of_a_missing_entity_is_stale(make):
     backend = make()
     with pytest.raises(StaleWriteError):
@@ -120,7 +138,8 @@ async def test_cosmos_replace_entities_is_one_conditional_batch():
     assert batch[0][1][1]["family_id"] == "fam1" and batch[0][1][1]["alias_keys"] == ["ann", "annie"]
 
 
-async def test_cosmos_other_batch_failures_are_raised_unchanged():
+@pytest.mark.parametrize("status", [400, 409, 429])
+async def test_cosmos_other_batch_failures_are_raised_unchanged(status):
     from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
 
     container = FakeContainer()
@@ -128,7 +147,7 @@ async def test_cosmos_other_batch_failures_are_raised_unchanged():
     [ann] = await _stored(backend, _entity("person-1", "Ann"))
 
     def fail(**kwargs):
-        raise CosmosBatchOperationError(error_index=0, headers={}, status_code=429, message="busy",
+        raise CosmosBatchOperationError(error_index=0, headers={}, status_code=status, message="failed",
                                         operation_responses=[])
 
     container.execute_item_batch = fail

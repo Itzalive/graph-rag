@@ -33,7 +33,7 @@ first). Two adapters implement it:
 `lifespan`, `valid_from`, `validity_basis`, `forgotten_at`, `purged_at`, `learned_at`, `last_changed_at`,
 `last_confirmed_at`, `about` (entity ids the memory is about), `mentions` (other entity ids it names), `topics`,
 `seq`, `situation` (a `Situation`, see "Situations and events") and `constraint`); all are optional and a document written before 0.3.0 reads as
-`kind None`, `seq 0`. List and search return only current memories: never deleted, forgotten or purged; past
+`kind None`, `seq 0` (and a document without `situation` or `constraint` reads `None` and `False`). List and search return only current memories: never deleted, forgotten or purged; past
 `valid_until` only with `include_expired`; before `valid_from` only with `include_future`; documents with a `doc_type`
 (change records, op markers, entities) are never memories.
 
@@ -77,7 +77,14 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
   by passing the last `seq` received.
 - `set_vectors(fact_id, vectors, *, expected_seq)` fills a memory's vectors only if it still has `expected_seq` (and, on
   Cosmos, its etag is unchanged); it returns whether it wrote and writes no change record.
-- `situational(channel, types, entity_ids, *, unsituated_kinds=(), limit=100)` returns the current memories whose situation applies (`situation_applies`). When `unsituated_kinds` is passed, it also returns the current memories of those kinds that have no situation. Each read is ordered by a true `constraint` first, then `learned_at` as stored (a missing one first), then id, and returns at most `limit` (1–100) rows. `types` and `entity_ids` take at most 200 distinct values each. The result carries no vectors. On Cosmos it needs the composite index `(/constraint DESC, /learned_at ASC, /id ASC)`.
+- `situational(channel, types, entity_ids, *, unsituated_kinds=(), limit=100)` reads current memories twice: those
+  whose situation applies (`situation_applies`), then, only when `unsituated_kinds` is not empty, those of one of those
+  kinds that have no situation; the result is the first rows then the second. Each read is ordered by a true
+  `constraint` first, then `learned_at` as the stored string (a missing one first), then id, and keeps at most `limit`
+  rows (1–100), raising `situational.limit_reached` when it drops any. `channel` must be non-empty and `types` and
+  `entity_ids` hold at most 200 distinct values each; otherwise `ValueError` before any read. The records carry no
+  vectors; on Cosmos only the search's named fields reach `extras`. On Cosmos it needs the composite index
+  `(/constraint DESC, /learned_at ASC, /id ASC)`.
 
 ### Entities
 
@@ -91,21 +98,27 @@ one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueEr
 (case-insensitive value). Types, handles and ids are the caller's.
 - `merged_into` is the id of the entity this one was merged into; it is stored only when set. What it means to readers
   is the caller's.
-- `find_by_aliases(keys, *, limit=50)` returns entities of any type whose names or aliases match the given keys, in one
-  query. At most 300 distinct folded keys are used and at most 300 rows are read. Results are ranked by the longest
-  matching key, then id, and cut to `limit` (1–50).
-- `replace_entities(updates)` writes entity updates as one batch. Each update applies only at its `version`; all of them
-  apply or none does. A stale update raises `StaleWriteError` naming the entity. A call takes at most 100 updates, with
-  distinct ids, each carrying a version.
+- `find_by_aliases(keys, *, limit=50)` returns entities of any type whose name or aliases match one of `keys`, in one
+  query. Keys are folded as `find_by_alias` folds them, empty ones dropped and repeats removed in the caller's order;
+  past 300 distinct keys only the first 300 are used (`aliases.keys_capped`); no keys returns `[]` without a read. At
+  most 300 matching entities are read (`aliases.read_capped` past them; in memory, the 300 with the lowest ids).
+  Results are ranked by the longest matching key in characters, then id, and cut to `limit` (1–50, otherwise
+  `ValueError`; `aliases.limit_reached` when it cuts).
+- `replace_entities(updates)` replaces each entity only if its stored version is still the `version` the update
+  carries; all apply or none does (on Cosmos, one transactional batch of `replace` operations with `if_match_etag`). An
+  update whose entity moved on or is gone raises `StaleWriteError` naming that entity's id, and nothing is written; any
+  other Cosmos failure is raised unchanged. A repeat of an applied call carries the version the first one replaced, so
+  it is stale and changes nothing: re-read and decide again. A call takes at most 100 updates with distinct ids, each
+  carrying a version (`ValueError` before anything is sent); no updates sends nothing.
 
 ### Situations and events
 
 `graph_rag.facts.Situation(channels, types=(), entities=(), topics=())` says where a memory applies: the channels it
 applies in and, optionally, the input types, entity ids and topics it is limited to. `FactRecord` and `FactSearchHit`
-carry it as `situation`; the stored document leaves out empty lists. `constraint` is a bool that is stored only when
+carry it as `situation`; the stored document always holds `channels` and leaves out the other lists when empty; a missing key reads as empty and any other key is ignored. `constraint` is a bool that is stored only when
 true. A caller sets `situation` and `constraint` on the record itself, never through `extras`: an extras value is written
 as given, so the two backends would read it differently. `check_write` refuses a situation without a channel
-(`ValueError`). `situation_applies(situation, channel, types, entity_ids)` says whether a situation applies to a read.
+(`ValueError`). `situation_applies(situation, channel, types, entity_ids)` is the matching rule: the channel is one of the situation's `channels`; its `types`, when it has any, share a value with `types`; its `entities`, when it has any, share one with `entity_ids`; and it has no `topics`.
 
 Both adapters take `events=` (an `EventSink`, `graph_rag.events.EventSink`; `NO_EVENTS` unless one is passed) and call
 `count(event, **fields)` on it for four events:
@@ -115,4 +128,4 @@ Both adapters take `events=` (an `EventSink`, `graph_rag.events.EventSink`; `NO_
 - `aliases.read_capped`;
 - `aliases.limit_reached` with `limit`.
 
-The fields are integers or graph-rag's fixed words only.
+The fields are integers or graph-rag's fixed words only (`query` is `situated` or `unsituated`).
