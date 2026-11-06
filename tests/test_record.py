@@ -6,7 +6,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from graph_rag.entities import EntityRecord
-from graph_rag.facts import FactRecord
+from graph_rag.facts import FactRecord, Situation
 from graph_rag.record import (
     ChangeSource, FactChange, WriteCheckError, change_from_state, change_id, change_to_state, check_write, op_marker_id,
 )
@@ -96,3 +96,9 @@ def test_entity_updates_count_toward_the_100_operations():
 def test_malformed_entity_updates_are_refused(entities, updates, message):
     with pytest.raises(ValueError, match=message):
         check_write(_rec(), [_change()], entities=entities, entity_updates=updates)
+
+
+def test_a_situation_needs_a_channel():
+    with pytest.raises(ValueError, match="channel"):
+        check_write(replace(_rec(), situation=Situation(())), [_change()])
+    check_write(replace(_rec(), situation=Situation(("chat",))), [_change()])

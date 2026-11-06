@@ -82,7 +82,7 @@ _ID_FORBIDDEN = frozenset("/\\?#")
 
 def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Sequence[EntityRecord] = (),
                 entity_updates: Sequence[EntityRecord] = ()) -> None:
-    """The library's write checks, run before anything is sent. Raises ValueError for a malformed write and
+    """The library's write checks, run before anything is sent. Raises ValueError for a malformed write (a situation without a channel is malformed) and
     WriteCheckError for a memory that breaks W1–W4. An entity update carries the version it read."""
     if not 1 <= len(changes) <= 2:
         raise ValueError("a write carries one or two changes")
@@ -102,6 +102,8 @@ def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Seq
         raise ValueError("entity ids must be distinct")
     if any(update.version is None for update in entity_updates):
         raise ValueError("an entity update must carry the version it read")
+    if record.situation is not None and not record.situation.channels:
+        raise ValueError("a situation must name at least one channel")
     if 2 + len(changes) + len(entities) + len(entity_updates) > MAX_BATCH_OPERATIONS:
         raise ValueError(f"a write may hold at most {MAX_BATCH_OPERATIONS} batch operations")
     if changes[-1].after is not None:

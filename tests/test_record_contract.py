@@ -615,3 +615,13 @@ async def test_situation_and_constraint_round_trip_through_write_read_and_search
     assert (read.situation, read.constraint, read.extras) == (situation, True, {})
     [hit] = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
     assert (hit.situation, hit.constraint, hit.extras) == (situation, True, {})
+
+
+async def test_a_situation_without_channels_is_refused_and_writes_nothing(make_backend):   # AC-S1-2
+    backend = make_backend()
+    record = _rec(lifespan="lasting", seq=1, situation=Situation((), topics=("meals",)))
+    with pytest.raises(ValueError, match="channel"):
+        await backend.write_change(record, [_change(1, "op-nochan", kind="created")])
+    assert await backend.read_fact("m1") is None
+    assert await backend.history("m1") == []
+    assert not await backend.op_applied("op-nochan")
