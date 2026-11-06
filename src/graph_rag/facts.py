@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Collection
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
@@ -11,6 +12,45 @@ class Holder:
     """Whose statement a memory is: a kind (for example a person or the system itself) and, optionally, who."""
     kind: str
     ref: str | None = None
+
+
+@dataclass(frozen=True)
+class Situation:
+    """Where a memory applies: the channels it applies in, and optionally the input types, the entity ids and the
+    topics it is limited to. Values are the caller's strings; graph-rag checks none of them."""
+    channels: tuple[str, ...]
+    types: tuple[str, ...] = ()
+    entities: tuple[str, ...] = ()
+    topics: tuple[str, ...] = ()
+
+
+_SITUATION_LISTS = ("types", "entities", "topics")
+
+
+def situation_state(situation: Situation | None) -> dict[str, list[str]] | None:
+    """A situation as stored: list values, `channels` always written, an empty list left out."""
+    if situation is None:
+        return None
+    lists = {key: list(getattr(situation, key)) for key in _SITUATION_LISTS if getattr(situation, key)}
+    return {"channels": list(situation.channels), **lists}
+
+
+def situation_from_state(value: dict[str, Any] | None) -> Situation | None:
+    """A stored situation: a missing key reads as empty; any other key is ignored."""
+    if value is None:
+        return None
+    return Situation(tuple(value.get("channels") or ()),
+                     **{key: tuple(value.get(key) or ()) for key in _SITUATION_LISTS})
+
+
+def situation_applies(situation: Situation, channel: str, types: Collection[str], entity_ids: Collection[str]) -> bool:
+    """The matching rule: the channel is one of the situation's; its types, when it has any, share a value with the
+    input's types; its entities, when it has any, share one with the input's entity ids; it has no topics (no input
+    brings topics)."""
+    return (channel in situation.channels
+            and (not situation.types or not set(situation.types).isdisjoint(types))
+            and (not situation.entities or not set(situation.entities).isdisjoint(entity_ids))
+            and not situation.topics)
 
 
 @dataclass(frozen=True)
@@ -43,6 +83,9 @@ class FactRecord:
     mentions: tuple[str, ...] = ()   # other entity ids it names
     topics: tuple[str, ...] = ()
     seq: int = 0
+    # 0.4.0: where an instruction or a constraint applies, and the constraint mark (stored only when true).
+    situation: Situation | None = None
+    constraint: bool = False
 
 
 @dataclass(frozen=True)
@@ -85,6 +128,9 @@ class FactSearchHit:
     mentions: tuple[str, ...] = ()   # other entity ids it names
     topics: tuple[str, ...] = ()
     seq: int = 0
+    # 0.4.0: where an instruction or a constraint applies, and the constraint mark (stored only when true).
+    situation: Situation | None = None
+    constraint: bool = False
 
 
 @runtime_checkable
@@ -116,6 +162,7 @@ _CORE_KEYS = frozenset({
 RECORDED_KEYS = frozenset({
     "kind", "holder", "lifespan", "valid_from", "validity_basis", "forgotten_at", "purged_at", "learned_at",
     "last_changed_at", "last_confirmed_at", "about", "mentions", "topics", "seq",
+    "situation", "constraint",
 })
 # Keys a stored memory document holds that are not extras.
 NON_EXTRA_KEYS = SYSTEM_KEYS | PARTITION_KEYS | _CORE_KEYS | RECORDED_KEYS
@@ -141,7 +188,7 @@ def _holder(value: dict[str, Any] | None) -> Holder | None:
 
 def fact_state(record: FactRecord) -> dict[str, Any]:
     """A memory's stored fields, without partition fields or vectors: the memory document's body and a change record's
-    `after`. Unset fields are left out, so a record that uses no recorded field gives exactly the pre-0.3.0 document. A
+    `after`. Unset fields are left out, so a record that uses no recorded field (including `situation` and `constraint`) gives exactly the pre-0.3.0 document. A
     typed field that is set wins over an extras key of the same name; an unset one leaves the extras value in place."""
     core = {
         "id": record.fact_id,
@@ -171,6 +218,8 @@ def fact_state(record: FactRecord) -> dict[str, Any]:
         "mentions": list(record.mentions) or None,
         "topics": list(record.topics) or None,
         "seq": record.seq or None,
+        "situation": situation_state(record.situation),
+        "constraint": True if record.constraint else None,
     }
     state = {**core, **record.extras, **{key: value for key, value in recorded.items() if value is not None}}
     return {key: value for key, value in state.items() if value is not None}
@@ -206,6 +255,8 @@ def record_from_state(doc: dict[str, Any], *, now: datetime) -> FactRecord:
         mentions=tuple(doc.get("mentions") or ()),
         topics=tuple(doc.get("topics") or ()),
         seq=int(doc.get("seq", 0)),
+        situation=situation_from_state(doc.get("situation")),
+        constraint=doc.get("constraint") is True,
     )
 
 
@@ -235,6 +286,8 @@ def hit_from_state(doc: dict[str, Any], score: float) -> FactSearchHit:
         mentions=tuple(doc.get("mentions") or ()),
         topics=tuple(doc.get("topics") or ()),
         seq=int(doc.get("seq", 0)),
+        situation=situation_from_state(doc.get("situation")),
+        constraint=doc.get("constraint") is True,
     )
 
 
@@ -247,7 +300,7 @@ def hit_from_record(record: FactRecord, score: float) -> FactSearchHit:
         holder=record.holder, lifespan=record.lifespan, valid_from=record.valid_from,
         validity_basis=record.validity_basis, learned_at=record.learned_at, last_changed_at=record.last_changed_at,
         last_confirmed_at=record.last_confirmed_at, about=record.about, mentions=record.mentions,
-        topics=record.topics, seq=record.seq,
+        topics=record.topics, seq=record.seq, situation=record.situation, constraint=record.constraint,
     )
 
 

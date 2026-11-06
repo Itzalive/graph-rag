@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call, patch
 import pytest
 
 from graph_rag.adapters.cosmos import CosmosFactBackend
-from graph_rag.facts import FactRecord, FactSearchRequest, Holder
+from graph_rag.facts import FactRecord, FactSearchRequest, Holder, Situation
 
 
 def _backend(family_id: str = "fam1") -> tuple[CosmosFactBackend, MagicMock]:
@@ -203,7 +203,7 @@ async def test_upsert_writes_recorded_fields_top_level():
     now = datetime.now(UTC)
     await backend.upsert_fact(FactRecord(fact_id="m1", body="b", created_at=now, updated_at=now, kind="opinion",
                                          holder=Holder("parent", "parent2"), topics=("people",), seq=2,
-                                         extras={"situation": {"channels": ["chat"]}}))
+                                         situation=Situation(("chat",))))
     doc = container.upsert_item.call_args[0][0]
     assert (doc["kind"], doc["holder"], doc["topics"], doc["seq"], doc["situation"]) == (
         "opinion", {"kind": "parent", "ref": "parent2"}, ["people"], 2, {"channels": ["chat"]})

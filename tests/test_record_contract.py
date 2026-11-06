@@ -10,7 +10,7 @@ from azure.cosmos.exceptions import CosmosBatchOperationError
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.entities import EntityRecord, Identifier, MissingHandleError
-from graph_rag.facts import FactRecord, FactSearchRequest, fact_state
+from graph_rag.facts import FactRecord, FactSearchRequest, Situation, fact_state
 from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, OpMarker, StaleWriteError, WriteCheckError
 from cosmos_fake import FakeContainer  # tests/ is on sys.path (no __init__.py; pytest prepend import mode)
 
@@ -603,3 +603,15 @@ async def test_a_search_leaves_out_a_memory_only_at_the_version_it_names(make_ba
     assert await ids(("m0", 0), ("m3", 3)) == ["m5"]                           # a memory with no seq is at 0
     assert await ids(("m0", 1), ("m3", 2), ("m5", 6)) == ["m0", "m3", "m5"]    # another version: shown again
     assert await ids(("m9", 0)) == ["m0", "m3", "m5"]
+
+
+async def test_situation_and_constraint_round_trip_through_write_read_and_search(make_backend):   # AC-S1-1
+    backend = make_backend()
+    situation = Situation(("chat",), entities=("ent-1",))
+    record = _rec(lifespan="lasting", seq=1, kind="fact", situation=situation, constraint=True,
+                  vector_embeddings=(1.0, 0.0))
+    await backend.write_change(record, [_change(1, "op-sit", kind="created")])
+    read = await backend.read_fact("m1")
+    assert (read.situation, read.constraint, read.extras) == (situation, True, {})
+    [hit] = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
+    assert (hit.situation, hit.constraint, hit.extras) == (situation, True, {})

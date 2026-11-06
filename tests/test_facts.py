@@ -6,7 +6,8 @@ import pytest
 
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.facts import (
-    FactRecord, FactSearchRequest, Holder, cosine_distance, fact_state, hit_from_record, record_from_state,
+    FactRecord, FactSearchRequest, Holder, Situation, cosine_distance, fact_state, hit_from_record, hit_from_state,
+    record_from_state, situation_applies,
 )
 
 
@@ -151,7 +152,7 @@ def _full_record() -> FactRecord:
         kind="fact", holder=Holder("parent", "parent1"), lifespan="lasting",
         valid_from=T0, valid_until=T0 + timedelta(days=30), validity_basis="ended",
         forgotten_at=None, purged_at=None, learned_at=T0, last_changed_at=T0, last_confirmed_at=T0,
-        about=("person-child2",), mentions=("activity-1",), topics=("meals",), seq=3, extras={"constraint": True},
+        about=("person-child2",), mentions=("activity-1",), topics=("meals",), seq=3, constraint=True,
     )
 
 
@@ -187,7 +188,7 @@ def test_search_hit_carries_recorded_fields():
     hit = hit_from_record(_full_record(), 0.25)
     assert (hit.kind, hit.holder, hit.lifespan, hit.topics, hit.about, hit.mentions, hit.seq, hit.score) == (
         "fact", Holder("parent", "parent1"), "lasting", ("meals",), ("person-child2",), ("activity-1",), 3, 0.25)
-    assert hit.extras == {"constraint": True}
+    assert (hit.extras, hit.constraint) == ({}, True)
 
 
 def test_about_and_mentions_are_two_stored_lists_and_entities_is_gone():
@@ -199,3 +200,53 @@ def test_about_and_mentions_are_two_stored_lists_and_entities_is_gone():
 def test_a_document_still_holding_entities_reads_it_as_an_extra():   # no compatibility layer (spec §7)
     record = record_from_state({"id": "o1", "fact": "b", "entities": ["x"]}, now=T0)
     assert (record.about, record.mentions, record.extras) == ((), (), {"entities": ["x"]})
+
+
+def test_situation_and_constraint_round_trip_typed_and_never_in_extras():   # AC-S1-1
+    record = FactRecord(fact_id="s1", body="b", created_at=T0, updated_at=T0, kind="instruction",
+                        situation=Situation(("email", "chat"), types=("GENERAL",), entities=("ent-1",)),
+                        constraint=True)
+    state = fact_state(record)
+    assert state["situation"] == {"channels": ["email", "chat"], "types": ["GENERAL"], "entities": ["ent-1"]}
+    assert state["constraint"] is True
+    back = record_from_state(state, now=T0)
+    assert back == record and back.extras == {}
+
+
+def test_a_record_using_neither_new_field_writes_the_0_3_0_document():   # AC-S1-1
+    state = fact_state(FactRecord(fact_id="o1", body="likes pasta", created_at=T0, updated_at=T0, constraint=False))
+    assert set(state) == {"id", "fact", "created_at", "last_updated_at", "deleted"}
+
+
+def test_a_0_3_0_document_reads_no_situation_and_no_constraint():   # AC-S1-1
+    record = record_from_state({"id": "o1", "fact": "likes pasta", "created_at": T0.isoformat()}, now=T0)
+    assert (record.situation, record.constraint, record.extras) == (None, False, {})
+
+
+def test_a_stored_situation_reads_missing_keys_as_empty_and_ignores_other_keys():
+    record = record_from_state({"id": "s2", "fact": "b", "situation": {"channels": ["chat"], "tiers": ["GENERAL"]}},
+                               now=T0)
+    assert record.situation == Situation(("chat",)) and record.extras == {}
+
+
+def test_hits_carry_situation_and_constraint():
+    doc = {"id": "s3", "fact": "b", "situation": {"channels": ["email"], "topics": ["meals"]}, "constraint": True}
+    hit = hit_from_state(doc, 0.1)
+    assert (hit.situation, hit.constraint, hit.extras) == (Situation(("email",), topics=("meals",)), True, {})
+    record = FactRecord(fact_id="s3", body="b", created_at=T0, updated_at=T0, situation=Situation(("chat",)))
+    assert hit_from_record(record, 0.2).situation == Situation(("chat",))
+
+
+@pytest.mark.parametrize("situation, channel, types, entity_ids, expected", [
+    (Situation(("email",)), "email", [], [], True),
+    (Situation(("email",)), "chat", [], [], False),                                         # channel-miss
+    (Situation(("email",), types=("GENERAL",)), "email", ["GENERAL", "ORDERS"], [], True),
+    (Situation(("email",), types=("GENERAL",)), "email", ["ORDERS"], [], False),            # types-disjoint
+    (Situation(("email",), types=("GENERAL",)), "email", [], [], False),                    # types-none-passed
+    (Situation(("email",), entities=("ent-1",)), "email", [], ["ent-9", "ent-1"], True),
+    (Situation(("email",), entities=("ent-1",)), "email", [], ["ent-2"], False),            # entities-disjoint
+    (Situation(("email", "chat"), topics=("meals",)), "chat", [], [], False),               # topics-never
+], ids=["channel", "channel-miss", "types-shared", "types-disjoint", "types-none-passed", "entities-shared",
+        "entities-disjoint", "topics-never"])
+def test_situation_applies(situation, channel, types, entity_ids, expected):
+    assert situation_applies(situation, channel, types, entity_ids) is expected
