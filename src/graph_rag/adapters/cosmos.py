@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Collection, Sequence
+from collections.abc import Collection, Iterable, Sequence
 from dataclasses import replace
 from typing import Any
 
 from graph_rag.clock import Clock, read_clock, utc_now
 from graph_rag.entities import (
-    EntityRecord, alias_key, check_entity_ids, entity_from_state, entity_to_state, identifier_key,
+    ALIASES_MAX_READ, EntityRecord, alias_key, alias_lookup_keys, check_alias_limit, check_entity_ids,
+    entity_from_state, entity_to_state, identifier_key, rank_alias_matches,
 )
 from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
@@ -50,6 +51,7 @@ CLAUSE_ENTITIES = "c.doc_type = 'entity'"
 CLAUSE_ENTITY_TYPE = "c.type = @type"
 CLAUSE_ALIAS = "ARRAY_CONTAINS(c.alias_keys, @alias)"
 CLAUSE_IDENTIFIER = "ARRAY_CONTAINS(c.identifier_keys, @identifier)"
+CLAUSE_ALIAS_ANY = "EXISTS(SELECT VALUE k FROM k IN c.alias_keys WHERE ARRAY_CONTAINS(@keys, k))"
 CLAUSE_ENTITY_IDS = "ARRAY_CONTAINS(@ids, c.id)"
 CLAUSE_SITUATED_CHANNEL = "ARRAY_CONTAINS(c.situation.channels, @channel)"
 CLAUSE_SITUATED_TYPES = ("(NOT IS_DEFINED(c.situation.types) OR ARRAY_LENGTH(c.situation.types) = 0 OR "
@@ -307,6 +309,27 @@ class CosmosFactBackend:
     async def find_by_alias(self, type: str, alias: str) -> list[EntityRecord]:
         return await self._entities([CLAUSE_ENTITY_TYPE, CLAUSE_ALIAS],
                                     [{"name": "@type", "value": type}, {"name": "@alias", "value": alias_key(alias)}])
+
+    async def find_by_aliases(self, keys: Iterable[str], *, limit: int = 50) -> list[EntityRecord]:
+        """Entities of any type whose name or alias is one of `keys` (folded), in one query of at most 300 keys;
+        ranked longest matching key first, then id, cut to `limit` (1-50). Each cap raises an event."""
+        check_alias_limit(limit)
+        used, given = alias_lookup_keys(keys)
+        if given > len(used):
+            self._events.count("aliases.keys_capped", given=given, used=len(used))
+        if not used:
+            return []
+        query = f"SELECT TOP {ALIASES_MAX_READ + 1} * FROM c WHERE {CLAUSE_ENTITIES} AND {CLAUSE_ALIAS_ANY}"
+        rows = await asyncio.to_thread(lambda: list(self._container.query_items(
+            query=query, parameters=[{"name": "@keys", "value": used}], partition_key=self._pk)))
+        if len(rows) > ALIASES_MAX_READ:
+            self._events.count("aliases.read_capped")
+            rows = rows[:ALIASES_MAX_READ]
+        ranked = rank_alias_matches((entity_from_state(row) for row in rows), used)
+        if len(ranked) > limit:
+            self._events.count("aliases.limit_reached", limit=limit)
+            ranked = ranked[:limit]
+        return ranked
 
     async def find_by_identifier(self, kind: str, value: str) -> list[EntityRecord]:
         return await self._entities([CLAUSE_IDENTIFIER],

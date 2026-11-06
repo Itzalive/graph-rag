@@ -22,7 +22,7 @@ class Bucket:
     container: FakeContainer | None
 
 
-@pytest.fixture(params=["memory"])   # Task 7 adds "cosmos"
+@pytest.fixture(params=["memory", "cosmos"])
 def bucket(request) -> Bucket:
     events = RecordingEvents()
     if request.param == "memory":
@@ -123,3 +123,43 @@ async def test_exactly_300_matches_raise_no_read_cap(bucket):
 
 def _no_read(*args, **kwargs):
     raise AssertionError("a refused call must not read")
+
+
+class _Spy(FakeContainer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries: list[tuple[str, dict]] = []
+
+    def query_items(self, query, parameters=None, partition_key=None):
+        self.queries.append((query, {p["name"]: p["value"] for p in parameters or []}))
+        return super().query_items(query, parameters=parameters, partition_key=partition_key)
+
+
+async def test_cosmos_alias_keys_are_one_parameter_never_in_the_query():   # trust boundary row 2
+    container = _Spy()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.find_by_aliases(["O'Brien", 'Ann "Nan"', "o'brien"])
+    [(query, params)] = container.queries
+    assert query == ("SELECT TOP 301 * FROM c WHERE c.doc_type = 'entity' AND "
+                     "EXISTS(SELECT VALUE k FROM k IN c.alias_keys WHERE ARRAY_CONTAINS(@keys, k))")
+    assert params == {"@keys": ["o'brien", 'ann "nan"']}
+
+
+async def test_every_limit_event_carries_only_its_name_integers_and_fixed_words(bucket):   # AC-S1-9
+    from datetime import timedelta  # noqa: PLC0415
+    from graph_rag.facts import FactRecord, Situation  # noqa: PLC0415
+
+    secret_name = "Zebedee Quux"
+    await _seed(bucket, *[_entity(f"person-{i:03}", secret_name) for i in range(301)])
+    await bucket.backend.find_by_aliases([secret_name, *[f"other {i}" for i in range(300)]], limit=1)
+    for i in range(3):
+        await bucket.backend.upsert_fact(FactRecord(
+            fact_id=f"m{i}", body="Zebedee's secret wording", created_at=NOW, updated_at=NOW, kind="instruction",
+            situation=Situation(("email",)), learned_at=NOW - timedelta(days=i)))
+    await bucket.backend.situational("email", [], [], unsituated_kinds=("instruction",), limit=1)
+    names = [event for event, _ in bucket.events.events]
+    assert names == ["aliases.keys_capped", "aliases.read_capped", "aliases.limit_reached",
+                     "situational.limit_reached"]
+    for _, fields in bucket.events.events:
+        for value in fields.values():
+            assert isinstance(value, int) or value in {"situated", "unsituated"}, value
