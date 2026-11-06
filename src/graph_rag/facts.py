@@ -314,3 +314,28 @@ def is_listed(record: FactRecord, now: datetime, *, include_expired: bool = Fals
     if not include_future and record.valid_from is not None and record.valid_from > now:
         return False
     return True
+
+
+SITUATIONAL_MAX_LIMIT = 100
+SITUATIONAL_MAX_VALUES = 200
+
+
+def check_situational(channel: str, types: Collection[str], entity_ids: Collection[str],
+                      limit: int) -> tuple[list[str], list[str]]:
+    """The distinct types and entity ids, sorted; ValueError for an empty channel, a limit outside 1-100 or more than
+    200 distinct types or entity ids."""
+    if not channel:
+        raise ValueError("channel must not be empty")
+    if not 1 <= limit <= SITUATIONAL_MAX_LIMIT:
+        raise ValueError(f"limit must be between 1 and {SITUATIONAL_MAX_LIMIT}")
+    distinct_types, distinct_ids = sorted(set(types)), sorted(set(entity_ids))
+    if len(distinct_types) > SITUATIONAL_MAX_VALUES or len(distinct_ids) > SITUATIONAL_MAX_VALUES:
+        raise ValueError(f"types and entity ids must each have at most {SITUATIONAL_MAX_VALUES} distinct values")
+    return distinct_types, distinct_ids
+
+
+def situational_key(record: FactRecord) -> tuple[bool, bool, str, str]:
+    """The order of a situational read: a true constraint first; then learned_at as stored (fact_state's isoformat
+    string), a missing one first; then the fact id."""
+    learned = _iso(record.learned_at)
+    return (not record.constraint, learned is not None, learned or "", record.fact_id)
