@@ -11,7 +11,7 @@ from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.entities import EntityRecord, Identifier, MissingHandleError
 from graph_rag.facts import FactRecord, FactSearchRequest, Situation, fact_state
-from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, OpMarker, StaleWriteError, WriteCheckError
+from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, OpMarker, RecordedFactBackend, StaleWriteError, WriteCheckError
 from cosmos_fake import FakeContainer  # tests/ is on sys.path (no __init__.py; pytest prepend import mode)
 
 NOW = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
@@ -644,3 +644,17 @@ async def test_merged_into_round_trips(make_backend):   # AC-S1-3
     if make_backend.kind == "cosmos":
         await backend.upsert_entity(PARK)
         assert "merged_into" not in make_backend.container.docs[("fam1", "shared", "FACTS", PARK.entity_id)]
+
+
+def test_both_backends_are_recorded_backends(make_backend):
+    backend = make_backend()
+    assert isinstance(backend, RecordedFactBackend)
+    for name in ("situational", "find_by_aliases", "replace_entities"):
+        assert name in RecordedFactBackend.__dict__, name
+
+
+def test_a_backend_without_the_new_operations_is_not_a_recorded_backend():
+    class Old(InMemoryFactBackend):
+        situational = None      # a runtime_checkable protocol treats a None attribute as missing
+
+    assert not isinstance(Old(clock=lambda: NOW), RecordedFactBackend)
