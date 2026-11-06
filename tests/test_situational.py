@@ -25,7 +25,7 @@ class Bucket:
     container: FakeContainer | None
 
 
-@pytest.fixture(params=["memory"])   # Task 5 adds "cosmos"
+@pytest.fixture(params=["memory", "cosmos"])
 def bucket(request) -> Bucket:
     events = RecordingEvents()
     if request.param == "memory":
@@ -144,3 +144,39 @@ def _no_read(*args, **kwargs):
 
 def test_no_events_does_nothing():
     assert NO_EVENTS.count("situational.limit_reached", query="situated", limit=5) is None
+
+
+class _Spy(FakeContainer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries: list[tuple[str, dict, list]] = []
+
+    def query_items(self, query, parameters=None, partition_key=None):
+        self.queries.append((query, {p["name"]: p["value"] for p in parameters or []}, partition_key))
+        return super().query_items(query, parameters=parameters, partition_key=partition_key)
+
+
+async def test_cosmos_situational_reads_named_fields_in_the_indexed_order():
+    container = _Spy()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.situational("email", ["GENERAL"], ["ent-1"], limit=7)
+    [(query, params, pk)] = container.queries
+    select = query.split(" FROM c ", 1)[0]
+    assert select.startswith("SELECT TOP @n c.id, c.fact, ") and "vector_embeddings" not in select
+    assert query.endswith(" ORDER BY c.constraint DESC, c.learned_at ASC, c.id ASC")
+    assert (params["@n"], params["@channel"], params["@types"], params["@entity_ids"]) == (8, "email", ["GENERAL"],
+                                                                                          ["ent-1"])
+    assert pk == ["fam1", "shared", "FACTS"]
+    await backend.situational("email", [], [], unsituated_kinds=("instruction", "instruction"))
+    unsituated_query, unsituated_params, _ = container.queries[-1]
+    assert "(NOT IS_DEFINED(c.situation) OR IS_NULL(c.situation))" in unsituated_query
+    assert unsituated_params["@kinds"] == ["instruction"] and len(container.queries) == 3
+
+
+async def test_cosmos_situational_sends_values_as_parameters_never_in_the_query():   # trust boundary row 1
+    container = _Spy()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.situational("em'ail", ["GEN\"ERAL"], ["ent-'1"], unsituated_kinds=("instr'uction",))
+    for query, params, _ in container.queries:
+        assert "em'ail" not in query and 'GEN"ERAL' not in query and "ent-'1" not in query
+        assert "instr'uction" not in query

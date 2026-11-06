@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from dataclasses import replace
 from typing import Any
 
@@ -10,8 +10,10 @@ from graph_rag.clock import Clock, read_clock, utc_now
 from graph_rag.entities import (
     EntityRecord, alias_key, check_entity_ids, entity_from_state, entity_to_state, identifier_key,
 )
+from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
-    SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, fact_state, hit_from_state, record_from_state,
+    SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, check_situational, fact_state, hit_from_state,
+    record_from_state,
 )
 from graph_rag.record import (
     HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, OpMarker, StaleWriteError, change_from_state, change_to_state,
@@ -49,6 +51,16 @@ CLAUSE_ENTITY_TYPE = "c.type = @type"
 CLAUSE_ALIAS = "ARRAY_CONTAINS(c.alias_keys, @alias)"
 CLAUSE_IDENTIFIER = "ARRAY_CONTAINS(c.identifier_keys, @identifier)"
 CLAUSE_ENTITY_IDS = "ARRAY_CONTAINS(@ids, c.id)"
+CLAUSE_SITUATED_CHANNEL = "ARRAY_CONTAINS(c.situation.channels, @channel)"
+CLAUSE_SITUATED_TYPES = ("(NOT IS_DEFINED(c.situation.types) OR ARRAY_LENGTH(c.situation.types) = 0 OR "
+                         "EXISTS(SELECT VALUE t FROM t IN c.situation.types WHERE ARRAY_CONTAINS(@types, t)))")
+CLAUSE_SITUATED_ENTITIES = ("(NOT IS_DEFINED(c.situation.entities) OR ARRAY_LENGTH(c.situation.entities) = 0 OR "
+                            "EXISTS(SELECT VALUE e FROM e IN c.situation.entities WHERE ARRAY_CONTAINS(@entity_ids, e)))")
+CLAUSE_SITUATED_TOPICS = "(NOT IS_DEFINED(c.situation.topics) OR ARRAY_LENGTH(c.situation.topics) = 0)"
+CLAUSE_UNSITUATED = "(NOT IS_DEFINED(c.situation) OR IS_NULL(c.situation))"
+CLAUSE_KIND_IN = "ARRAY_CONTAINS(@kinds, c.kind)"
+# Needs the composite index (constraint DESC, learned_at ASC, id ASC): Cosmos refuses it otherwise.
+ORDER_SITUATIONAL = "ORDER BY c.constraint DESC, c.learned_at ASC, c.id ASC"
 
 # A transactional batch holds at most 100 operations (Azure Cosmos DB limit).
 
@@ -60,6 +72,7 @@ class CosmosFactBackend:
     ``cosmos_url``, ``credential``, and ``database_name`` to build one lazily.
     The container name is always ``"memory"`` (the shared assistant container).
     One bucket per backend: ``[family_id, scope, "FACTS"]``, ``scope`` ``"shared"`` unless the caller names another.
+    ``events`` receives the backend's counters (``situational.limit_reached``); ``NO_EVENTS`` unless the caller names one.
     """
 
     def __init__(
@@ -72,6 +85,7 @@ class CosmosFactBackend:
         family_id: str,
         scope: str = "shared",
         clock: Clock = utc_now,
+        events: EventSink = NO_EVENTS,
     ) -> None:
         if container is None and (cosmos_url is None or credential is None or database_name is None):
             raise ValueError(
@@ -90,6 +104,7 @@ class CosmosFactBackend:
         self._scope = scope
         self._pk = [family_id, scope, "FACTS"]
         self._clock = clock
+        self._events = events
 
     @property
     def _container(self):
@@ -162,6 +177,23 @@ class CosmosFactBackend:
         # With the cosine distance function VectorDistance returns a similarity (1 = identical) and ORDER BY puts the most
         # similar first: 1 - similarity is the FactSearchHit cosine distance, already in ascending order.
         return [hit_from_state(doc, 1.0 - doc["score"] if "score" in doc else float("inf")) for doc in raw_results]
+
+    async def situational(self, channel: str, types: Collection[str], entity_ids: Collection[str], *,
+                          unsituated_kinds: Collection[str] = (), limit: int = 100) -> list[FactRecord]:
+        type_list, id_list = check_situational(channel, types, entity_ids, limit)
+        filters, params = self._memory_filters(include_expired=False, include_future=False)
+        situated = await self._situational_read(
+            [*filters, CLAUSE_SITUATED_CHANNEL, CLAUSE_SITUATED_TYPES, CLAUSE_SITUATED_ENTITIES, CLAUSE_SITUATED_TOPICS],
+            [*params, {"name": "@channel", "value": channel}, {"name": "@types", "value": type_list},
+             {"name": "@entity_ids", "value": id_list}],
+            "situated", limit)
+        if not unsituated_kinds:
+            return situated
+        unsituated = await self._situational_read(
+            [*filters, CLAUSE_UNSITUATED, CLAUSE_KIND_IN],
+            [*params, {"name": "@kinds", "value": list(dict.fromkeys(unsituated_kinds))}],
+            "unsituated", limit)
+        return [*situated, *unsituated]
 
     # --- RecordedFactBackend ---
 
@@ -288,6 +320,18 @@ class CosmosFactBackend:
             lambda: list(self._container.query_items(query=query, parameters=params or None, partition_key=self._pk))
         )
         return sorted((entity_from_state(row) for row in rows), key=lambda e: e.entity_id)
+
+    async def _situational_read(self, filters: list[str], params: list[dict[str, Any]], query: str,
+                                limit: int) -> list[FactRecord]:
+        # Named fields, never `c`: vectors are ~22 KB each and up to limit + 1 rows are read.
+        sql = f"SELECT TOP @n {_SEARCH_SELECT} FROM c WHERE {' AND '.join(filters)} {ORDER_SITUATIONAL}"
+        params = [*params, {"name": "@n", "value": limit + 1}]
+        rows = await asyncio.to_thread(
+            lambda: list(self._container.query_items(query=sql, parameters=params, partition_key=self._pk)))
+        if len(rows) > limit:
+            self._events.count("situational.limit_reached", query=query, limit=limit)
+            rows = rows[:limit]
+        return [self._from_document(row) for row in rows]
 
     def _stamp(self, doc: dict[str, Any]) -> dict[str, Any]:
         return {**doc, "family_id": self._family_id, "user_id": self._scope, "category": "FACTS"}
