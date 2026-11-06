@@ -57,3 +57,7 @@ def test_merged_into_is_stored_and_read():   # AC-S1-3
     state = entity_to_state(entity)
     assert state["merged_into"] == "person-2"
     assert entity_from_state(state) == entity
+
+
+def test_merged_into_is_part_of_equality():   # spec §1
+    assert replace(JO, merged_into="person-2") != JO

@@ -229,6 +229,19 @@ def test_a_stored_situation_reads_missing_keys_as_empty_and_ignores_other_keys()
     assert record.situation == Situation(("chat",)) and record.extras == {}
 
 
+def test_a_situation_always_writes_channels_and_reads_missing_channels_as_empty():   # spec §1
+    state = fact_state(FactRecord(fact_id="s4", body="b", created_at=T0, updated_at=T0, situation=Situation(())))
+    assert state["situation"] == {"channels": []}
+    record = record_from_state({"id": "s4", "fact": "b", "situation": {"types": ["GENERAL"]}}, now=T0)
+    assert record.situation == Situation((), types=("GENERAL",))
+
+
+def test_constraint_reads_true_only_from_a_stored_true():   # spec §1, §2.1: only a stored true is a constraint
+    doc = {"id": "c1", "fact": "b", "constraint": "yes"}
+    assert record_from_state(doc, now=T0).constraint is False
+    assert hit_from_state(doc, 0.1).constraint is False
+
+
 def test_hits_carry_situation_and_constraint():
     doc = {"id": "s3", "fact": "b", "situation": {"channels": ["email"], "topics": ["meals"]}, "constraint": True}
     hit = hit_from_state(doc, 0.1)
