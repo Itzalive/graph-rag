@@ -8,7 +8,7 @@ import pytest
 
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
-from graph_rag.entities import EntityRecord
+from graph_rag.entities import EntityRecord, Identifier
 from cosmos_fake import FakeContainer
 from recording_events import RecordingEvents
 
@@ -57,6 +57,15 @@ async def test_any_type_matches_and_names_and_aliases_both_count(bucket):
     assert await _ids(bucket, ["oakfield", "annie"]) == ["org-1", "person-1"]
 
 
+async def test_a_found_entity_reads_back_whole_with_its_version(bucket):   # §1 merged_into, version on every read
+    stored = EntityRecord(entity_id="person-1", type="person", name="Ann", handle="ann", aliases=("Annie",),
+                          identifiers=(Identifier("address", "ann@example.com"),), merged_into="person-0")
+    await bucket.backend.upsert_entity(stored)
+    [found] = await bucket.backend.find_by_aliases(["annie"])
+    read = await bucket.backend.read_entity("person-1")
+    assert found == stored and found.version is not None and found.version == read.version
+
+
 async def test_results_rank_longest_matching_key_then_id_and_cut_to_limit(bucket):   # AC-S1-4
     await _seed(bucket,
                 _entity("person-c", "Sam", "Samantha Jones"),     # longest key it has: 14, but only "sam" matches
@@ -66,6 +75,12 @@ async def test_results_rank_longest_matching_key_then_id_and_cut_to_limit(bucket
     assert await _ids(bucket, ["sam", "sam jones"]) == ["person-b", "person-a", "person-c", "person-d"]
     assert await _ids(bucket, ["sam", "sam jones"], limit=2) == ["person-b", "person-a"]
     assert bucket.events.events == [("aliases.limit_reached", {"limit": 2})]
+
+
+async def test_ranking_folds_the_keys_and_counts_characters(bucket):   # AC-S1-4
+    await _seed(bucket, _entity("person-a", "Zoë"), _entity("person-b", "Zoey"),
+                _entity("person-c", "Sam"), _entity("person-d", "Sam Jones"))
+    assert await _ids(bucket, ["ZOË", "Zoey", "SAM", "Sam Jones"]) == ["person-d", "person-b", "person-a", "person-c"]
 
 
 @pytest.mark.parametrize("keys, given", [
@@ -93,6 +108,12 @@ async def test_more_than_300_matches_keep_300_and_count_it(bucket):
         assert found == [f"person-{i:03}" for i in range(50)]
 
 
+async def test_the_301st_match_is_dropped_before_ranking(bucket):
+    await _seed(bucket, *[_entity(f"person-{i:03}", "Sam") for i in range(300)], _entity("person-zzz", "Sam Jones"))
+    assert await _ids(bucket, ["sam", "sam jones"], limit=1) == ["person-000"]
+    assert bucket.events.events == [("aliases.read_capped", {}), ("aliases.limit_reached", {"limit": 1})]
+
+
 async def test_no_keys_reads_nothing(bucket):   # AC-S1-4
     if bucket.container is not None:
         bucket.container.query_items = _no_read
@@ -108,11 +129,23 @@ async def test_limit_outside_1_to_50_is_refused_before_any_read(bucket, limit): 
         await bucket.backend.find_by_aliases(["sam"], limit=limit)
 
 
+async def test_a_refused_limit_raises_no_event(bucket):   # AC-S1-5
+    with pytest.raises(ValueError):
+        await bucket.backend.find_by_aliases([f"k{i}" for i in range(301)], limit=0)
+    assert bucket.events.events == []
+
+
 @pytest.mark.parametrize("limit", [1, 50])
 async def test_limits_1_and_50_are_accepted(bucket, limit):
     await _seed(bucket, *[_entity(f"person-{i:02}", "Sam") for i in range(limit)])   # exactly `limit` matches
     assert len(await _ids(bucket, ["sam"], limit=limit)) == limit
     assert bucket.events.events == []
+
+
+async def test_the_default_limit_is_50(bucket):
+    await _seed(bucket, *[_entity(f"person-{i:02}", "Sam") for i in range(51)])
+    assert len(await _ids(bucket, ["sam"])) == 50
+    assert bucket.events.events == [("aliases.limit_reached", {"limit": 50})]
 
 
 async def test_exactly_300_matches_raise_no_read_cap(bucket):

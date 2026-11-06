@@ -400,7 +400,8 @@ async def test_cosmos_entity_version_is_the_documents_etag():
 async def test_cosmos_every_entity_read_of_a_document_without_a_handle_raises_the_typed_error():
     backend = _backend_holding_an_entity_without_a_handle()
     for read in (lambda: backend.read_entity("activity-old"), lambda: backend.list_entities(),
-                 lambda: backend.find_by_alias("activity", "brownies")):
+                 lambda: backend.find_by_alias("activity", "brownies"),
+                 lambda: backend.find_by_aliases(["brownies"])):
         with pytest.raises(MissingHandleError):
             await read()
 
