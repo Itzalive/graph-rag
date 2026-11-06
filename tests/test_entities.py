@@ -45,3 +45,15 @@ def test_the_version_is_read_from_the_etag_and_never_stored():
 
 def test_the_version_is_not_part_of_equality():
     assert replace(JO, version="e1") == replace(JO, version="e2") == JO
+
+
+def test_an_entity_without_merged_into_stores_no_key():   # AC-S1-3
+    entity = EntityRecord(entity_id="person-1", type="person", name="Ann", handle="ann")
+    assert "merged_into" not in entity_to_state(entity)
+
+
+def test_merged_into_is_stored_and_read():   # AC-S1-3
+    entity = EntityRecord(entity_id="person-1", type="person", name="Ann", handle="ann", merged_into="person-2")
+    state = entity_to_state(entity)
+    assert state["merged_into"] == "person-2"
+    assert entity_from_state(state) == entity

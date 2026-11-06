@@ -18,7 +18,7 @@ class EntityRecord:
     """An entity in a bucket. `handle` is the caller's readable id for it (its rule is the caller's); it is not an alias
     key: find_by_alias matches the name and aliases only. `version` is set by every read (Cosmos: the document's _etag;
     in memory: a counter) and moves on every write; it is never stored and not part of equality. An update carries the
-    version it read."""
+    version it read. `merged_into` is stored only when set."""
     entity_id: str
     type: str
     name: str
@@ -27,6 +27,7 @@ class EntityRecord:
     identifiers: tuple[Identifier, ...] = ()
     seq: int = 0
     version: str | None = field(default=None, compare=False)
+    merged_into: str | None = None   # the entity this one was merged into; what it means to readers is the caller's
 
 
 def alias_key(alias: str) -> str:
@@ -47,7 +48,7 @@ def identifier_keys(entity: EntityRecord) -> list[str]:
 
 
 def entity_to_state(entity: EntityRecord) -> dict[str, Any]:
-    return {
+    state: dict[str, Any] = {
         "id": entity.entity_id,
         "doc_type": "entity",
         "type": entity.type,
@@ -59,6 +60,9 @@ def entity_to_state(entity: EntityRecord) -> dict[str, Any]:
         "alias_keys": alias_keys(entity),
         "identifier_keys": identifier_keys(entity),
     }
+    if entity.merged_into is not None:
+        state["merged_into"] = entity.merged_into
+    return state
 
 
 class MissingHandleError(ValueError):
@@ -82,6 +86,7 @@ def entity_from_state(doc: dict[str, Any]) -> EntityRecord:
         identifiers=tuple(Identifier(i["kind"], i["value"]) for i in doc.get("identifiers", ())),
         seq=doc.get("seq", 0),
         version=doc.get("_etag"),
+        merged_into=doc.get("merged_into"),
     )
 
 

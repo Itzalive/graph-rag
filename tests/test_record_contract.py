@@ -625,3 +625,13 @@ async def test_a_situation_without_channels_is_refused_and_writes_nothing(make_b
     assert await backend.read_fact("m1") is None
     assert await backend.history("m1") == []
     assert not await backend.op_applied("op-nochan")
+
+
+async def test_merged_into_round_trips(make_backend):   # AC-S1-3
+    backend = make_backend()
+    merged = replace(BROWNIES, merged_into="activity-1111")
+    await backend.upsert_entity(merged)
+    assert await backend.read_entity(BROWNIES.entity_id) == merged
+    if make_backend.kind == "cosmos":
+        await backend.upsert_entity(PARK)
+        assert "merged_into" not in make_backend.container.docs[("fam1", "shared", "FACTS", PARK.entity_id)]
