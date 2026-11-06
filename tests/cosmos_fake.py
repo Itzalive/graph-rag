@@ -37,6 +37,9 @@ def _situation(d: dict) -> dict:
     return d.get("situation") or {}
 
 
+# The situational rules for the values graph-rag writes: list values, `constraint` true or missing. Real Cosmos differs
+# on values graph-rag never writes (a null `types` list is excluded there; a `false` or string `constraint` sorts above a
+# missing one), so the fake is not the reference for those.
 def _shares(values, wanted) -> bool:
     return not values or bool(set(values) & set(wanted))
 

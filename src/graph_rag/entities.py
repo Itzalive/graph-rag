@@ -59,13 +59,17 @@ def check_alias_limit(limit: int) -> None:
 
 def alias_lookup_keys(keys: Iterable[str]) -> tuple[list[str], int]:
     """The keys a lookup uses, folded with alias_key, empty ones dropped, deduplicated in the caller's order, the first
-    ALIASES_MAX_KEYS; and how many distinct keys were given."""
+    ALIASES_MAX_KEYS; and how many distinct keys were given. One string (which would read as its characters) is a
+    TypeError."""
+    if isinstance(keys, str):
+        raise TypeError("keys must be a collection of strings, not a string")
     folded = list(dict.fromkeys(key for key in (alias_key(k) for k in keys) if key))
     return folded[:ALIASES_MAX_KEYS], len(folded)
 
 
 def rank_alias_matches(entities: Iterable[EntityRecord], keys: Collection[str]) -> list[EntityRecord]:
-    """Longest matching alias key (characters) first, then entity id."""
+    """Longest matching alias key (characters) first, then entity id. The keys are recomputed from the name and aliases,
+    which is what a store's `alias_keys` hold while `alias_key` folds as it does when they were written."""
     wanted = set(keys)
     return sorted(entities, key=lambda e: (-max((len(k) for k in alias_keys(e) if k in wanted), default=0),
                                            e.entity_id))

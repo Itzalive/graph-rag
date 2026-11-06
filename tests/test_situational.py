@@ -161,6 +161,18 @@ async def test_bounds_count_distinct_values_and_include_their_limits(bucket):   
     assert await _ids(bucket, "email", [], [], limit=1) == ["s1"]
 
 
+@pytest.mark.parametrize("args, kwargs", [
+    (("email", "GENERAL", []), {}),
+    (("email", [], "ent-1"), {}),
+    (("email", [], []), {"unsituated_kinds": "instruction"}),
+], ids=["types", "entity_ids", "unsituated_kinds"])
+async def test_a_bare_string_is_refused_where_values_are_expected(bucket, args, kwargs):
+    if bucket.container is not None:
+        bucket.container.query_items = _no_read
+    with pytest.raises(TypeError):
+        await bucket.backend.situational(*args, **kwargs)
+
+
 def _no_read(*args, **kwargs):
     raise AssertionError("a refused call must not read")
 

@@ -154,6 +154,14 @@ async def test_exactly_300_matches_raise_no_read_cap(bucket):
     assert bucket.events.events == [("aliases.limit_reached", {"limit": 50})]
 
 
+async def test_a_bare_string_is_refused_as_keys(bucket):
+    if bucket.container is not None:
+        bucket.container.query_items = _no_read
+    with pytest.raises(TypeError):
+        await bucket.backend.find_by_aliases("Bob")
+    assert bucket.events.events == []
+
+
 def _no_read(*args, **kwargs):
     raise AssertionError("a refused call must not read")
 

@@ -182,18 +182,22 @@ class CosmosFactBackend:
 
     async def situational(self, channel: str, types: Collection[str], entity_ids: Collection[str], *,
                           unsituated_kinds: Collection[str] = (), limit: int = 100) -> list[FactRecord]:
-        type_list, id_list = check_situational(channel, types, entity_ids, limit)
+        """Current memories whose situation applies, then (only when kinds are passed) current memories of those kinds
+        with no situation; two reads, each in the situational order (the composite index) and cut to `limit`. A result
+        is for reading only: it carries no vectors and only the search's named fields, so a caller that writes a memory
+        found here reads it with `read_fact` first, or its vectors and unlisted extras are lost."""
+        type_list, id_list, kind_list = check_situational(channel, types, entity_ids, limit, unsituated_kinds)
         filters, params = self._memory_filters(include_expired=False, include_future=False)
         situated = await self._situational_read(
             [*filters, CLAUSE_SITUATED_CHANNEL, CLAUSE_SITUATED_TYPES, CLAUSE_SITUATED_ENTITIES, CLAUSE_SITUATED_TOPICS],
             [*params, {"name": "@channel", "value": channel}, {"name": "@types", "value": type_list},
              {"name": "@entity_ids", "value": id_list}],
             "situated", limit)
-        if not unsituated_kinds:
+        if not kind_list:
             return situated
         unsituated = await self._situational_read(
             [*filters, CLAUSE_UNSITUATED, CLAUSE_KIND_IN],
-            [*params, {"name": "@kinds", "value": list(dict.fromkeys(unsituated_kinds))}],
+            [*params, {"name": "@kinds", "value": kind_list}],
             "unsituated", limit)
         return [*situated, *unsituated]
 

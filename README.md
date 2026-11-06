@@ -83,8 +83,10 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
   `constraint` first, then `learned_at` as the stored string (a missing one first), then id, and keeps at most `limit`
   rows (1–100), raising `situational.limit_reached` when it drops any. `channel` must be non-empty and `types` and
   `entity_ids` hold at most 200 distinct values each; otherwise `ValueError` before any read. The records carry no
-  vectors; on Cosmos only the search's named fields reach `extras`. On Cosmos it needs the composite index
-  `(/constraint DESC, /learned_at ASC, /id ASC)`.
+  vectors; on Cosmos only the search's named fields reach `extras`. A result is for reading only: to write a memory
+  found here, read it with `read_fact` first, or its vectors and unlisted extras are lost. On Cosmos it needs the
+  composite index `(/constraint DESC, /learned_at ASC, /id ASC)`. A string passed for `types`, `entity_ids` or
+  `unsituated_kinds` (or for `find_by_aliases`' `keys`) is a `TypeError`: each takes a collection of strings.
 
 ### Entities
 
@@ -115,7 +117,7 @@ one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueEr
 
 `graph_rag.facts.Situation(channels, types=(), entities=(), topics=())` says where a memory applies: the channels it
 applies in and, optionally, the input types, entity ids and topics it is limited to. `FactRecord` and `FactSearchHit`
-carry it as `situation`; the stored document always holds `channels` and leaves out the other lists when empty; a missing key reads as empty and any other key is ignored. `constraint` is a bool that is stored only when
+carry it as `situation`; the stored document always holds `channels` and leaves out the other lists when empty; a missing key reads as empty, and any other key is ignored on read and not written back. `constraint` is a bool that is stored only when
 true. A caller sets `situation` and `constraint` on the record itself, never through `extras`: an extras value is written
 as given, so the two backends would read it differently. `check_write` refuses a situation without a channel
 (`ValueError`). `situation_applies(situation, channel, types, entity_ids)` is the matching rule: the channel is one of the situation's `channels`; its `types`, when it has any, share a value with `types`; its `entities`, when it has any, share one with `entity_ids`; and it has no `topics`.

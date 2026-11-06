@@ -320,10 +320,18 @@ SITUATIONAL_MAX_LIMIT = 100
 SITUATIONAL_MAX_VALUES = 200
 
 
-def check_situational(channel: str, types: Collection[str], entity_ids: Collection[str],
-                      limit: int) -> tuple[list[str], list[str]]:
-    """The distinct types and entity ids, sorted; ValueError for an empty channel, a limit outside 1-100 or more than
-    200 distinct types or entity ids."""
+def check_values(name: str, values: object) -> None:
+    """A collection of strings, never one string (which would read as its characters): TypeError."""
+    if isinstance(values, str):
+        raise TypeError(f"{name} must be a collection of strings, not a string")
+
+
+def check_situational(channel: str, types: Collection[str], entity_ids: Collection[str], limit: int,
+                      unsituated_kinds: Collection[str] = ()) -> tuple[list[str], list[str], list[str]]:
+    """The distinct types, entity ids and unsituated kinds, each sorted; TypeError for a string where a collection is
+    expected; ValueError for an empty channel, a limit outside 1-100 or more than 200 distinct types or entity ids."""
+    for name, values in (("types", types), ("entity_ids", entity_ids), ("unsituated_kinds", unsituated_kinds)):
+        check_values(name, values)
     if not channel:
         raise ValueError("channel must not be empty")
     if not 1 <= limit <= SITUATIONAL_MAX_LIMIT:
@@ -331,7 +339,7 @@ def check_situational(channel: str, types: Collection[str], entity_ids: Collecti
     distinct_types, distinct_ids = sorted(set(types)), sorted(set(entity_ids))
     if len(distinct_types) > SITUATIONAL_MAX_VALUES or len(distinct_ids) > SITUATIONAL_MAX_VALUES:
         raise ValueError(f"types and entity ids must each have at most {SITUATIONAL_MAX_VALUES} distinct values")
-    return distinct_types, distinct_ids
+    return distinct_types, distinct_ids, sorted(set(unsituated_kinds))
 
 
 def situational_key(record: FactRecord) -> tuple[bool, bool, str, str]:
