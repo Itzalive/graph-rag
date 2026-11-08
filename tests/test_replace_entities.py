@@ -103,18 +103,18 @@ async def test_no_updates_send_nothing(make):
     await backend.replace_entities([])
 
 
-async def test_100_updates_are_accepted(make):
+async def test_50_updates_are_accepted(make):
     backend = make()
-    stored = await _stored(backend, *[_entity(f"person-{i:03}", f"P{i}") for i in range(100)])
+    stored = await _stored(backend, *[_entity(f"person-{i:03}", f"P{i}") for i in range(50)])
     await backend.replace_entities([replace(e, aliases=("x",)) for e in stored])
-    assert (await backend.read_entity("person-099")).aliases == ("x",)
+    assert (await backend.read_entity("person-049")).aliases == ("x",)
 
 
 @pytest.mark.parametrize("updates", [
-    [replace(_entity(f"person-{i:03}", "P"), version="1") for i in range(101)],
+    [replace(_entity(f"person-{i:03}", "P"), version="1") for i in range(51)],
     [replace(_entity("person-1", "Ann"), version="1"), replace(_entity("person-1", "Ann"), version="1")],
     [_entity("person-1", "Ann")],                                            # no version
-], ids=["101", "repeated-id", "no-version"])
+], ids=["51", "repeated-id", "no-version"])
 async def test_malformed_updates_are_refused_before_anything_is_written(make, updates):   # AC-S1-5
     backend = make()
     if make.container is not None:

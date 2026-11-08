@@ -82,10 +82,10 @@ def _parks(n: int, *, start: int = 0) -> list[EntityRecord]:
     return [replace(PARK, entity_id=f"place-{i}") for i in range(start, start + n)]
 
 
-def test_entity_updates_count_toward_the_100_operations():
-    check_write(_rec(), [_change()], entity_updates=_parks(97))           # marker + change + memory + 97 = 100
+def test_entity_updates_count_toward_the_100_operations():   # two operations per entity (S2 spec §6)
+    check_write(_rec(), [_change()], entity_updates=_parks(48))           # marker + change + memory + 2 * 48 = 99
     with pytest.raises(ValueError, match="100"):
-        check_write(_rec(), [_change()], entities=_parks(1, start=200), entity_updates=_parks(97))
+        check_write(_rec(), [_change()], entities=_parks(1, start=200), entity_updates=_parks(48))   # 101
 
 
 @pytest.mark.parametrize("entities, updates, message", [

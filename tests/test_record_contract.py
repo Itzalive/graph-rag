@@ -333,7 +333,7 @@ async def test_two_writes_creating_one_entity_one_wins(make_backend):   # AC-M16
 
 
 @pytest.mark.parametrize("entities, message", [
-    ([EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}", handle=f"place_{i}") for i in range(98)], "100"),
+    ([EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}", handle=f"place_{i}") for i in range(49)], "100"),
     ([BROWNIES, BROWNIES], "distinct"),
 ])
 async def test_a_write_cosmos_would_refuse_is_refused_on_both(make_backend, entities, message):
@@ -342,6 +342,15 @@ async def test_a_write_cosmos_would_refuse_is_refused_on_both(make_backend, enti
         await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-big", kind="created")],
                                    entities=entities)
     assert await backend.read_fact("m1") is None
+
+
+async def test_a_write_with_48_new_entities_fits_one_batch(make_backend):   # 2 + 1 + 2 * 48 = 99
+    backend = make_backend()
+    entities = [EntityRecord(entity_id=f"place-{i}", type="place", name=f"Place {i}", handle=f"place_{i}")
+                for i in range(48)]
+    await backend.write_change(_rec(lifespan="lasting", seq=1), [_change(1, "op-48", kind="created")],
+                               entities=entities)
+    assert (await backend.read_entity("place-47")).name == "Place 47"
 
 
 async def test_about_and_mentions_round_trip_through_write_read_search_and_history(make_backend):   # AC-R19
