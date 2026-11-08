@@ -7,10 +7,11 @@ from datetime import UTC, datetime
 import pytest
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.entities import EntityRecord, Identifier
-from graph_rag.record import StaleWriteError
+from graph_rag.record import ChangeSource, StaleWriteError
 from cosmos_fake import FakeContainer
 
 NOW = datetime(2026, 11, 8, 9, 0, tzinfo=UTC)
+SOURCE = ChangeSource("parent_chat", actor="parent1", ref="chat:parent1:s1")
 
 _CLUB = EntityRecord(entity_id="ent-club", type="organisation", name="Riverside Swim Club", handle="riverside",
                      aliases=("RSC",), identifiers=(Identifier("address", "bookings@riverside.example"),
@@ -39,6 +40,6 @@ async def test_another_familys_entity_is_never_changed():
     await fam2.upsert_entity(_CLUB)
     [theirs] = await fam2.read_entities(["ent-club"])
     with pytest.raises(StaleWriteError):
-        await fam1.replace_entities([EntityRecord(**{**vars(theirs), "aliases": ("Changed",)})])
+        await fam1.replace_entities([EntityRecord(**{**vars(theirs), "aliases": ("Changed",)})], source=SOURCE, at=NOW)
     [after] = await fam2.read_entities(["ent-club"])
     assert after.aliases == ("RSC",)

@@ -4,6 +4,7 @@ import asyncio
 import threading
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import replace
+from datetime import datetime
 from typing import Any
 
 from graph_rag.clock import Clock, read_clock, utc_now
@@ -17,8 +18,9 @@ from graph_rag.facts import (
     record_from_state,
 )
 from graph_rag.record import (
-    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, OpMarker, StaleWriteError, change_from_state, change_to_state,
-    check_entity_replacements, check_history_limit, check_write, op_marker_id,
+    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, ChangeSource, EntityChange, FactChange, OpMarker, StaleWriteError,
+    change_from_state, change_to_state, check_entity_replacements, check_history_limit, check_write,
+    entity_change_from_state, entity_change_to_state, entity_writes, op_marker_id,
 )
 
 
@@ -48,6 +50,8 @@ CLAUSE_CHANGES = "c.doc_type = 'fact_change'"
 CLAUSE_CHANGE_OF_FACT = "c.fact_id = @fact_id"
 CLAUSE_AFTER_SEQ = "c.seq > @after"
 CLAUSE_ENTITIES = "c.doc_type = 'entity'"
+CLAUSE_ENTITY_CHANGES = "c.doc_type = 'entity_change'"
+CLAUSE_CHANGE_OF_ENTITY = "c.entity_id = @entity_id"
 CLAUSE_ENTITY_TYPE = "c.type = @type"
 CLAUSE_ALIAS = "ARRAY_CONTAINS(c.alias_keys, @alias)"
 CLAUSE_IDENTIFIER = "ARRAY_CONTAINS(c.identifier_keys, @identifier)"
@@ -293,24 +297,47 @@ class CosmosFactBackend:
         doc = self._stamp(entity_to_state(entity))
         await asyncio.to_thread(lambda: self._container.upsert_item(doc))
 
-    async def replace_entities(self, updates: Sequence[EntityRecord]) -> None:
-        """Replace these entities in one transactional batch, each only if its etag is still the `version` it carries;
-        all or none. A 412 or 404 on any replace raises StaleWriteError naming that entity; any other failure is
-        raised unchanged."""
+    async def replace_entities(self, updates: Sequence[EntityRecord], *, source: ChangeSource,
+                               at: datetime) -> None:
+        """Replace these entities, each at its seq plus one, and create each one's change record, in one transactional
+        batch; all or none. The batch is the n conditional replaces (each only if its etag is still the `version` it
+        carries), then the n record creates in the same order. A 404 or 412 at index i < n raises StaleWriteError
+        naming the entity replaced at i; a 409 at index n <= i < 2n (that record id is taken) raises it naming the
+        entity of record i - n. Any other failure is raised unchanged."""
         from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
 
         check_entity_replacements(updates)
         if not updates:
             return
-        operations = [("replace", (u.entity_id, self._stamp(entity_to_state(u))), {"if_match_etag": u.version})
-                      for u in updates]
+        _, written, records = entity_writes((), updates, source=source, at=at)
+        operations: list[tuple[Any, ...]] = [
+            *[("replace", (u.entity_id, self._stamp(entity_to_state(u))), {"if_match_etag": u.version})
+              for u in written],
+            *[("create", (self._stamp(entity_change_to_state(r)),)) for r in records],
+        ]
         try:
             await asyncio.to_thread(
                 lambda: self._container.execute_item_batch(batch_operations=operations, partition_key=self._pk))
         except CosmosBatchOperationError as exc:
-            if exc.status_code in (404, 412) and 0 <= exc.error_index < len(updates):
-                raise StaleWriteError(updates[exc.error_index].entity_id) from exc
+            n, index = len(written), exc.error_index
+            if exc.status_code in (404, 412) and 0 <= index < n:
+                raise StaleWriteError(written[index].entity_id) from exc
+            if exc.status_code == 409 and n <= index < 2 * n:
+                raise StaleWriteError(written[index - n].entity_id) from exc
             raise
+
+    async def entity_history(self, entity_id: str, *, after_seq: int = -1,
+                             limit: int = HISTORY_DEFAULT_LIMIT) -> list[EntityChange]:
+        """This entity's change records with a seq above `after_seq`, in seq order, at most `limit` (one query)."""
+        check_history_limit(limit)
+        query = (f"SELECT TOP @n * FROM c WHERE {CLAUSE_ENTITY_CHANGES} AND {CLAUSE_CHANGE_OF_ENTITY} "
+                 f"AND {CLAUSE_AFTER_SEQ} ORDER BY c.seq ASC")
+        params = [{"name": "@n", "value": limit}, {"name": "@entity_id", "value": entity_id},
+                  {"name": "@after", "value": after_seq}]
+        rows = await asyncio.to_thread(
+            lambda: list(self._container.query_items(query=query, parameters=params, partition_key=self._pk))
+        )
+        return [entity_change_from_state(row) for row in rows]
 
     async def read_entity(self, entity_id: str) -> EntityRecord | None:
         doc = await self._read_raw(entity_id)

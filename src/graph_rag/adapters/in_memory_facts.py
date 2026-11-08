@@ -3,6 +3,7 @@ from __future__ import annotations
 import itertools
 from collections.abc import Collection, Iterable, Sequence
 from dataclasses import replace
+from datetime import datetime
 
 from graph_rag.clock import Clock, read_clock, utc_now
 from graph_rag.entities import (
@@ -15,8 +16,8 @@ from graph_rag.facts import (
     is_listed, situation_applies, situational_key,
 )
 from graph_rag.record import (
-    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, FactChange, OpMarker, StaleWriteError, change_id,
-    check_entity_replacements, check_history_limit, check_write,
+    HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, ChangeSource, EntityChange, FactChange, OpMarker, StaleWriteError,
+    change_id, check_entity_replacements, check_history_limit, check_write, entity_change_id, entity_writes,
 )
 
 
@@ -29,6 +30,7 @@ class InMemoryFactBackend:
         self._changes: dict[str, FactChange] = {}
         self._ops: dict[str, int] = {}
         self._entities: dict[str, EntityRecord] = {}
+        self._entity_changes: dict[str, EntityChange] = {}
         self._entity_versions = itertools.count(1)
         self._clock = clock
         self._events = events
@@ -134,13 +136,30 @@ class InMemoryFactBackend:
     async def upsert_entity(self, entity: EntityRecord) -> None:
         self._put_entity(entity)
 
-    async def replace_entities(self, updates: Sequence[EntityRecord]) -> None:
+    async def replace_entities(self, updates: Sequence[EntityRecord], *, source: ChangeSource,
+                               at: datetime) -> None:
+        """Replace these entities, each at its seq plus one, and store each one's change record; all or none. An
+        entity moved on or gone since read, or a change record id already stored, raises StaleWriteError naming that
+        entity before anything is written."""
         check_entity_replacements(updates)
+        _, written, records = entity_writes((), updates, source=source, at=at)
         for update in updates:
             if self._changed_since_read(update):
                 raise StaleWriteError(update.entity_id)
-        for update in updates:
-            self._put_entity(update)
+        for record in records:
+            if entity_change_id(record.entity_id, record.seq) in self._entity_changes:
+                raise StaleWriteError(record.entity_id)
+        for entity in written:
+            self._put_entity(entity)
+        for record in records:
+            self._entity_changes[entity_change_id(record.entity_id, record.seq)] = record
+
+    async def entity_history(self, entity_id: str, *, after_seq: int = -1,
+                             limit: int = HISTORY_DEFAULT_LIMIT) -> list[EntityChange]:
+        """This entity's change records with a seq above `after_seq`, in seq order, at most `limit`."""
+        check_history_limit(limit)
+        rows = [c for c in self._entity_changes.values() if c.entity_id == entity_id and c.seq > after_seq]
+        return sorted(rows, key=lambda c: c.seq)[:limit]
 
     async def read_entity(self, entity_id: str) -> EntityRecord | None:
         return self._entities.get(entity_id)

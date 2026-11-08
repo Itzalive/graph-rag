@@ -57,6 +57,8 @@ _CLAUSES: dict[str, Callable[[dict, dict], bool]] = {
     adapter.CLAUSE_CHANGE_OF_FACT: lambda d, p: d.get("fact_id") == p["@fact_id"],
     adapter.CLAUSE_AFTER_SEQ: lambda d, p: d.get("seq", 0) > p["@after"],
     adapter.CLAUSE_ENTITIES: lambda d, p: d.get("doc_type") == "entity",
+    adapter.CLAUSE_ENTITY_CHANGES: lambda d, p: d.get("doc_type") == "entity_change",
+    adapter.CLAUSE_CHANGE_OF_ENTITY: lambda d, p: d.get("entity_id") == p["@entity_id"],
     adapter.CLAUSE_ENTITY_TYPE: lambda d, p: d.get("type") == p["@type"],
     adapter.CLAUSE_ALIAS: lambda d, p: p["@alias"] in d.get("alias_keys", []),
     adapter.CLAUSE_ALIAS_ANY: lambda d, p: bool(set(d.get("alias_keys", [])) & set(p["@keys"])),
