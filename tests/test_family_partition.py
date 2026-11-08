@@ -43,3 +43,16 @@ async def test_another_familys_entity_is_never_changed():
         await fam1.replace_entities([EntityRecord(**{**vars(theirs), "aliases": ("Changed",)})], source=SOURCE, at=NOW)
     [after] = await fam2.read_entities(["ent-club"])
     assert after.aliases == ("RSC",)
+
+
+async def test_another_familys_history_is_never_read():   # AC-S2-21
+    fam1, fam2 = _two_families()
+    await fam1.upsert_entity(_CLUB)
+    await fam2.upsert_entity(_CLUB)
+    [theirs] = await fam2.read_entities(["ent-club"])
+    await fam2.replace_entities([EntityRecord(**{**vars(theirs), "aliases": ("Theirs",)})], source=SOURCE, at=NOW)
+    assert await fam1.entity_history("ent-club") == []
+    [ours] = await fam1.read_entities(["ent-club"])
+    await fam1.replace_entities([EntityRecord(**{**vars(ours), "aliases": ("Ours",)})], source=SOURCE, at=NOW)
+    assert [c.after["aliases"] for c in await fam2.entity_history("ent-club")] == [["Theirs"]]
+    assert [c.after["aliases"] for c in await fam1.entity_history("ent-club")] == [["Ours"]]

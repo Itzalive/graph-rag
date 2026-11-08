@@ -60,8 +60,7 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
   any new entities and any entity updates in one transactional batch. An entity update replaces the entity only if it is
   unchanged since it was read: it must carry the `version` that read returned (Cosmos: a batch `replace` with
   `if_match_etag`). The backend sets the last change's `after` to the memory's state. Before sending it refuses
-  (`ValueError`) a write Cosmos could not take: more than 100 batch operations (the marker, the changes, new entities,
-  entity updates and the memory), an entity id twice, an entity update without a version, or a `/`, `\`, `?` or `#` in
+  (`ValueError`) a write Cosmos could not take: more than 100 batch operations (the marker, the changes, new entities and entity updates with a change record each, and the memory), an entity id twice, an entity update without a version, or a `/`, `\`, `?` or `#` in
   the fact id or op id. It then runs the write checks W1–W4 (`WriteCheckError(code)`): a dated
   memory has a `valid_until`; a `valid_until` on any other lifespan has basis `ended`; a validity date has a basis; the
   memory's `seq` is the last change's.
@@ -106,12 +105,21 @@ one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueEr
   most 300 matching entities are read (`aliases.read_capped` past them; in memory, the 300 with the lowest ids).
   Results are ranked by the longest matching key in characters, then id, and cut to `limit` (1–50, otherwise
   `ValueError`; `aliases.limit_reached` when it cuts).
-- `replace_entities(updates)` replaces each entity only if its stored version is still the `version` the update
-  carries; all apply or none does (on Cosmos, one transactional batch of `replace` operations with `if_match_etag`). An
-  update whose entity moved on or is gone raises `StaleWriteError` naming that entity's id, and nothing is written; any
-  other Cosmos failure is raised unchanged. A repeat of an applied call carries the version the first one replaced, so
-  it is stale and changes nothing: re-read and decide again. A call takes at most 100 updates with distinct ids, each
-  carrying a version (`ValueError` before anything is sent); no updates sends nothing.
+- `replace_entities(updates, *, source, at)` replaces each entity only if its stored version is still the `version`
+  the update carries, writes it at the update's `seq` plus one, and writes one entity change record for it; all apply
+  or none does (on Cosmos, one transactional batch: the conditional `replace` operations, then a `create` per record).
+  An update whose entity moved on or is gone, or whose record id is already taken, raises `StaleWriteError` naming
+  that entity's id, and nothing is written; any other Cosmos failure is raised unchanged. A repeat of an applied call
+  carries the version the first one replaced, so it is stale and changes nothing: re-read and decide again. A call
+  takes at most 50 updates with distinct ids, each carrying a version (`ValueError` before anything is sent); no
+  updates sends nothing.
+- Entity history (0.5.0): every entity `write_change` creates (written at `seq` 1) or updates (at `seq` plus one), and
+  every `replace_entities` update, gets an `EntityChange(entity_id, seq, kind, at, source, after)` in the same batch:
+  `kind` `created` or `changed`, `source` and `at` the memory change's (its last) or the ones `replace_entities` was
+  given, `after` the entity's state (type, name, handle, aliases, identifiers, seq, `merged_into` when set). The record
+  is a document of its own (`doc_type: "entity_change"`, id `entity_change:<entity id>:<seq>`). The backend sets `seq`,
+  never the caller; `upsert_entity` stores the `seq` it is given and writes no record.
+  `entity_history(entity_id, *, after_seq=-1, limit=100)` returns the records in `seq` order (`limit` 1–500).
 
 ### Situations and events
 
