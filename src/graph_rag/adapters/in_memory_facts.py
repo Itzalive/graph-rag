@@ -95,19 +95,24 @@ class InMemoryFactBackend:
                            entities: Sequence[EntityRecord] = (),
                            entity_updates: Sequence[EntityRecord] = ()) -> None:
         check_write(record, changes, entities, entity_updates)
+        created, updated, records = entity_writes(entities, entity_updates, source=changes[-1].source,
+                                                  at=changes[-1].at)
         op_id = changes[-1].op_id
         if op_id in self._ops:
             raise AlreadyAppliedError(op_id)
         stored = [*changes[:-1], replace(changes[-1], after=fact_state(record))]
         if any(change_id(c.fact_id, c.seq) in self._changes for c in stored) or any(
                 e.entity_id in self._entities for e in entities) or any(
-                self._changed_since_read(update) for update in entity_updates):
+                self._changed_since_read(update) for update in entity_updates) or any(
+                entity_change_id(r.entity_id, r.seq) in self._entity_changes for r in records):
             raise StaleWriteError(record.fact_id)
         self._ops[op_id] = record.seq
         for change in stored:
             self._changes[change_id(change.fact_id, change.seq)] = change
-        for entity in (*entities, *entity_updates):
+        for entity in (*created, *updated):
             self._put_entity(entity)
+        for entity_record in records:
+            self._entity_changes[entity_change_id(entity_record.entity_id, entity_record.seq)] = entity_record
         self._facts[record.fact_id] = record
 
     async def op_applied(self, op_id: str) -> bool:

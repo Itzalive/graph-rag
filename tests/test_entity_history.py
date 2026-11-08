@@ -10,8 +10,9 @@ import pytest
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.entities import EntityRecord, Identifier
-from graph_rag.record import (ChangeSource, EntityChange, StaleWriteError, entity_after, entity_change_from_state,
-                              entity_change_id, entity_change_to_state, entity_writes)
+from graph_rag.facts import FactRecord
+from graph_rag.record import (AlreadyAppliedError, ChangeSource, EntityChange, FactChange, StaleWriteError, entity_after,
+                              entity_change_from_state, entity_change_id, entity_change_to_state, entity_writes)
 from cosmos_fake import FakeContainer
 
 NOW = datetime(2026, 11, 8, 9, 0, tzinfo=UTC)
@@ -127,6 +128,67 @@ async def test_records_are_never_read_as_memories_entities_or_changes(make):   #
     assert [e.entity_id for e in await backend.find_by_aliases(["Riverside"])] == ["ent-club"]
     assert [e.entity_id for e in await backend.find_by_identifier("address", "bookings@riverside.example")] == [
         "ent-club"]
+
+
+def _memory(seq=1):
+    return FactRecord(fact_id="m1", body="Bob swims at Riverside", created_at=NOW, updated_at=NOW, lifespan="lasting",
+                      seq=seq)
+
+
+def _change(seq, kind, op_id, source=SOURCE, after=None):
+    return FactChange(fact_id="m1", seq=seq, kind=kind, at=NOW, source=source, reason="told in chat", op_id=op_id,
+                      after=after)
+
+
+async def test_a_memory_write_records_the_entities_it_creates_and_updates(make):   # AC-S2-20
+    backend = make()
+    other = await _stored(backend, replace(CLUB, entity_id="ent-two", handle="two", name="Two"))
+    legacy = ChangeSource("legacy", label="chat")
+    await backend.write_change(_memory(), [_change(0, "legacy", "op-0", source=legacy, after={"fact": "x"}),
+                                           _change(1, "created", "op-1")],
+                               entities=[replace(CLUB, seq=9)], entity_updates=[replace(other, aliases=("2",))])
+    assert [(e.entity_id, e.seq) for e in [await backend.read_entity("ent-club"), await backend.read_entity("ent-two")]
+            ] == [("ent-club", 1), ("ent-two", 1)]
+    [made] = await backend.entity_history("ent-club")
+    [changed] = await backend.entity_history("ent-two")
+    assert (made.kind, made.seq, made.source, made.at) == ("created", 1, SOURCE, NOW)
+    assert (changed.kind, changed.seq, changed.after["aliases"]) == ("changed", 1, ["2"])
+
+
+async def test_a_memory_write_whose_entity_record_is_taken_writes_nothing(make):   # AC-S2-21
+    backend = make()
+    read = await _stored(backend)
+    await backend.replace_entities([replace(read, aliases=("One",))], source=SOURCE, at=NOW)
+    await backend.upsert_entity(replace(read, aliases=("Reset",)))   # back at seq 0: the next write takes seq 1 again
+    reset = await backend.read_entity("ent-club")
+    with pytest.raises(StaleWriteError):
+        await backend.write_change(_memory(), [_change(1, "created", "op-1")],
+                                   entity_updates=[replace(reset, aliases=("Two",))])
+    assert await backend.read_fact("m1") is None
+    assert (await backend.read_entity("ent-club")).aliases == ("Reset",)
+
+
+async def test_an_applied_write_records_nothing_again(make):
+    backend = make()
+    await backend.write_change(_memory(), [_change(1, "created", "op-1")], entities=[CLUB])
+    with pytest.raises(AlreadyAppliedError):   # the same op with another new entity: nothing of it is written
+        await backend.write_change(_memory(), [_change(1, "created", "op-1")],
+                                   entities=[replace(CLUB, entity_id="ent-new", handle="new")])
+    assert await backend.entity_history("ent-new") == []
+    assert await backend.read_entity("ent-new") is None
+    assert [c.seq for c in await backend.entity_history("ent-club")] == [1]
+
+
+async def test_cosmos_memory_write_batch_layout():
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    other = await _stored(backend, replace(CLUB, entity_id="ent-two", handle="two", name="Two"))
+    await backend.write_change(_memory(), [_change(1, "created", "op-1")], entities=[CLUB],
+                               entity_updates=[replace(other, aliases=("2",))])
+    batch = container.batches[-1]
+    ids = [op[1][0] if op[0] == "replace" else op[1][0]["id"] for op in batch]
+    assert [op[0] for op in batch] == ["create", "create", "create", "replace", "create", "create", "upsert"]
+    assert ids[2:6] == ["ent-club", "ent-two", "entity_change:ent-club:1", "entity_change:ent-two:1"]
 
 
 async def test_an_upsert_writes_no_record(make):   # §6: test and eval fixtures

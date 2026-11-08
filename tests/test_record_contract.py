@@ -317,7 +317,7 @@ async def test_a_new_entity_is_written_with_its_memory(make_backend):   # spec Â
     backend = make_backend()
     record = _rec(lifespan="lasting", seq=1, about=("activity-0f3a",))
     await backend.write_change(record, [_change(1, "op-a", kind="created")], entities=[BROWNIES])
-    assert await backend.read_entity("activity-0f3a") == BROWNIES
+    assert await backend.read_entity("activity-0f3a") == replace(BROWNIES, seq=1)
     assert (await backend.read_fact("m1")).about == ("activity-0f3a",)
 
 

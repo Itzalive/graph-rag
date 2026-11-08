@@ -210,17 +210,20 @@ class CosmosFactBackend:
     async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
                            entities: Sequence[EntityRecord] = (),
                            entity_updates: Sequence[EntityRecord] = ()) -> None:
-        """Write the memory, its change records, the op marker, any new entities and any entity updates in one
-        transactional batch (spec xz59.9 §2, xz59.11 §7). An entity update replaces the entity only if its etag is still
+        """Write the memory, its change records, the op marker, any new entities (at seq 1), any entity updates (at
+        their seq plus one) and each entity's change record in one transactional batch (spec xz59.9 §2, xz59.11 §7,
+        S2 §6); the records take the last change's source and time. An entity update replaces the entity only if its etag is still
         the `version` the update carries. A request whose marker exists raises AlreadyAppliedError before anything is
         sent; a create conflict on the marker inside the batch (two copies of one request at once) raises it too; any
-        other create conflict (a change record's seq, or a new entity's id), a failed etag condition on an entity
+        other create conflict (a change record's seq, a new entity's id, or an entity change record's id), a failed etag condition on an entity
         update and an entity update whose entity no longer exists (404 on that replace) raise StaleWriteError. Any
         other batch failure is raised unchanged. The memory document is replaced
         whole: pass the vectors to keep."""
         from azure.cosmos.exceptions import CosmosBatchOperationError  # noqa: PLC0415
 
         check_write(record, changes, entities, entity_updates)
+        created, updated, records = entity_writes(entities, entity_updates, source=changes[-1].source,
+                                                  at=changes[-1].at)
         op_id = changes[-1].op_id
         marker = op_marker_id(op_id)
         if await self._read_raw(marker) is not None:
@@ -232,9 +235,10 @@ class CosmosFactBackend:
             ("create", (self._stamp({"id": marker, "doc_type": "fact_op", "op_id": op_id, "fact_id": record.fact_id,
                                     "seq": record.seq}),)),
             *[("create", (self._stamp(change_to_state(change)),)) for change in stored],
-            *[("create", (self._stamp(entity_to_state(entity)),)) for entity in entities],
+            *[("create", (self._stamp(entity_to_state(entity)),)) for entity in created],
             *[("replace", (update.entity_id, self._stamp(entity_to_state(update))), {"if_match_etag": update.version})
-              for update in entity_updates],
+              for update in updated],
+            *[("create", (self._stamp(entity_change_to_state(entity_record)),)) for entity_record in records],
             ("upsert", (self._to_document(record),)),
         ]
         try:
