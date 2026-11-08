@@ -140,7 +140,8 @@ def check_write(record: FactRecord, changes: Sequence[FactChange], entities: Seq
 
 
 def check_entity_replacements(updates: Sequence[EntityRecord]) -> None:
-    """At most MAX_BATCH_OPERATIONS updates, distinct ids, each carrying the version it read; otherwise ValueError."""
+    """At most MAX_ENTITY_REPLACEMENTS updates (each takes two batch operations: the replace and its change record),
+    distinct ids, each carrying the version it read; otherwise ValueError."""
     if len(updates) > MAX_ENTITY_REPLACEMENTS:
         raise ValueError(f"replace_entities takes at most {MAX_ENTITY_REPLACEMENTS} updates")
     ids = [update.entity_id for update in updates]

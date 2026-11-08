@@ -191,6 +191,39 @@ async def test_cosmos_memory_write_batch_layout():
     assert ids[2:6] == ["ent-club", "ent-two", "entity_change:ent-club:1", "entity_change:ent-two:1"]
 
 
+async def test_a_replace_stale_by_version_alone_writes_no_record(make):   # AC-S2-20
+    backend = make()
+    read = await _stored(backend)
+    await backend.upsert_entity(replace(read, aliases=("Moved",)))   # a new version at seq 0: record seq 1 is still free
+    with pytest.raises(StaleWriteError):
+        await backend.replace_entities([replace(read, aliases=("Two",))], source=SOURCE, at=NOW)
+    assert await backend.entity_history("ent-club") == []
+
+
+async def test_history_is_in_seq_order_whatever_order_it_was_written(make):
+    backend = make()
+    for seq in (5, 2):   # upsert sets the seq, so the record at seq 6 is written before the record at seq 3
+        current = await _stored(backend, replace(CLUB, seq=seq))
+        await backend.replace_entities([replace(current, aliases=(f"A{seq}",))], source=SOURCE, at=NOW)
+    assert [c.seq for c in await backend.entity_history("ent-club")] == [3, 6]
+    assert [c.seq for c in await backend.entity_history("ent-club", limit=1)] == [3]
+
+
+async def test_a_record_keeps_the_time_and_source_its_write_names(make):   # §6 Every writer names a source
+    later = datetime(2026, 11, 9, 7, 30, tzinfo=UTC)   # not the backend's clock, nor the memory's updated_at
+    labelled = ChangeSource("email", actor="parent1", ref="email:m2", label="inbox")
+    backend = make()
+    read = await _stored(backend)
+    other = await _stored(backend, replace(CLUB, entity_id="ent-two", handle="two", name="Two"))
+    await backend.replace_entities([replace(read, aliases=("One",))], source=labelled, at=later)
+    await backend.write_change(_memory(), [replace(_change(1, "created", "op-1"), at=later)],
+                               entity_updates=[replace(other, aliases=("2",))])
+    [replaced] = await backend.entity_history("ent-club")
+    [written] = await backend.entity_history("ent-two")
+    assert (replaced.at, replaced.source) == (later, labelled)
+    assert (written.at, written.source) == (later, SOURCE)
+
+
 async def test_an_upsert_writes_no_record(make):   # §6: test and eval fixtures
     backend = make()
     await _stored(backend, replace(CLUB, seq=4))
