@@ -52,7 +52,7 @@ class EntityChange:
 
 class StaleWriteError(Exception):
     """Another write took this change's seq, or created an entity this write creates, or an entity `replace_entities`
-    updates moved on or is gone: re-read and apply once more."""
+    updates moved on or is gone, or an entity change record's id is already taken: re-read and apply once more."""
 
 
 class AlreadyAppliedError(Exception):

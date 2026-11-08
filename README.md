@@ -60,7 +60,9 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
   any new entities and any entity updates in one transactional batch. An entity update replaces the entity only if it is
   unchanged since it was read: it must carry the `version` that read returned (Cosmos: a batch `replace` with
   `if_match_etag`). The backend sets the last change's `after` to the memory's state. Before sending it refuses
-  (`ValueError`) a write Cosmos could not take: more than 100 batch operations (the marker, the changes, new entities and entity updates with a change record each, and the memory), an entity id twice, an entity update without a version, or a `/`, `\`, `?` or `#` in
+  (`ValueError`) a write Cosmos could not take: more than 100 batch operations (the marker, the changes, new entities
+  and entity updates with a change record each, and the memory), an entity id twice, an entity update without a
+  version, or a `/`, `\`, `?` or `#` in
   the fact id or op id. It then runs the write checks W1–W4 (`WriteCheckError(code)`): a dated
   memory has a `valid_until`; a `valid_until` on any other lifespan has basis `ended`; a validity date has a basis; the
   memory's `seq` is the last change's.
