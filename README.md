@@ -88,6 +88,11 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
   found here, read it with `read_fact` first, or its vectors and unlisted extras are lost. On Cosmos it needs the
   composite index `(/constraint DESC, /learned_at ASC, /id ASC)`. A string passed for `types`, `entity_ids` or
   `unsituated_kinds` (or for `find_by_aliases`' `keys`) is a `TypeError`: each takes a collection of strings.
+- `by_kind(kinds, *, constraints=False, limit=100)` (0.6.0) reads current memories whose `kind` is in `kinds`, or, with
+  `constraints`, that carry a true `constraint`, in `situational`'s order, keeping at most `limit` rows (1–100) and
+  raising `situational.limit_reached` with query `by_kind` when it drops any. `kinds` holds at most 20 distinct values,
+  and no kinds without `constraints` is refused (`ValueError`, before any read); a string is a `TypeError`. The records
+  carry no vectors and are for reading only, as `situational`'s are; on Cosmos it uses the same composite index.
 
 ### Entities
 

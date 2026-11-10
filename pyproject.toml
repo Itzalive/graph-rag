@@ -1,6 +1,6 @@
 [project]
 name = "graph-rag"
-version = "0.5.0"
+version = "0.6.0"
 description = "Library-first graph-rag bootstrap"
 readme = "README.md"
 authors = [

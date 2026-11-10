@@ -658,7 +658,7 @@ async def test_merged_into_round_trips(make_backend):   # AC-S1-3
 def test_both_backends_are_recorded_backends(make_backend):
     backend = make_backend()
     assert isinstance(backend, RecordedFactBackend)
-    for name in ("situational", "find_by_aliases", "replace_entities", "entity_history"):
+    for name in ("situational", "by_kind", "find_by_aliases", "replace_entities", "entity_history"):
         assert name in RecordedFactBackend.__dict__, name
 
 
