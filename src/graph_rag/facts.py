@@ -342,6 +342,23 @@ def check_situational(channel: str, types: Collection[str], entity_ids: Collecti
     return distinct_types, distinct_ids, sorted(set(unsituated_kinds))
 
 
+BY_KIND_MAX_KINDS = 20
+
+
+def check_by_kind(kinds: Collection[str], constraints: bool, limit: int) -> list[str]:
+    """The distinct kinds, sorted; TypeError for a string where a collection is expected; ValueError for a limit
+    outside 1-100, more than 20 distinct kinds, or no kinds and no constraints (a read that could return nothing)."""
+    check_values("kinds", kinds)
+    if not 1 <= limit <= SITUATIONAL_MAX_LIMIT:
+        raise ValueError(f"limit must be between 1 and {SITUATIONAL_MAX_LIMIT}")
+    distinct = sorted(set(kinds))
+    if len(distinct) > BY_KIND_MAX_KINDS:
+        raise ValueError(f"kinds must have at most {BY_KIND_MAX_KINDS} distinct values")
+    if not distinct and not constraints:
+        raise ValueError("by_kind needs kinds or constraints")
+    return distinct
+
+
 def situational_key(record: FactRecord) -> tuple[bool, bool, str, str]:
     """The order of a situational read: a true constraint first; then learned_at as stored (fact_state's isoformat
     string), a missing one first; then the fact id."""

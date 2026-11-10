@@ -12,7 +12,8 @@ from graph_rag.entities import (
 )
 from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
-    FactRecord, FactSearchHit, FactSearchRequest, check_situational, cosine_distance, fact_state, hit_from_record,
+    FactRecord, FactSearchHit, FactSearchRequest, check_by_kind, check_situational, cosine_distance, fact_state,
+    hit_from_record,
     is_listed, situation_applies, situational_key,
 )
 from graph_rag.record import (
@@ -90,6 +91,17 @@ class InMemoryFactBackend:
         unsituated = sorted((r for r in current if kinds and r.situation is None and r.kind in kinds),
                             key=situational_key)
         return [*self._cut(situated, "situated", limit), *self._cut(unsituated, "unsituated", limit)]
+
+    async def by_kind(self, kinds: Collection[str], *, constraints: bool = False,
+                      limit: int = 100) -> list[FactRecord]:
+        """Current memories whose kind is one of `kinds`, or, with `constraints`, that carry a true constraint; one read
+        in the situational order, cut to `limit` (event query `by_kind`). A result is for reading only: it carries no
+        vectors, so a caller that writes a memory found here reads it with `read_fact` first."""
+        kind_list = set(check_by_kind(kinds, constraints, limit))
+        now = read_clock(self._clock)
+        rows = sorted((r for r in self._facts.values() if is_listed(r, now)
+                       and (r.kind in kind_list or (constraints and r.constraint))), key=situational_key)
+        return self._cut(rows, "by_kind", limit)
 
     async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
                            entities: Sequence[EntityRecord] = (),
