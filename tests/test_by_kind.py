@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
 
+from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.facts import FactRecord, Situation
 from cosmos_fake import FakeContainer          # tests/ is on sys.path
@@ -23,10 +24,14 @@ class Bucket:
     container: FakeContainer | None
 
 
-@pytest.fixture(params=["memory"])
+@pytest.fixture(params=["memory", "cosmos"])
 def bucket(request) -> Bucket:
     events = RecordingEvents()
-    return Bucket(InMemoryFactBackend(clock=lambda: NOW, events=events), events, None)
+    if request.param == "memory":
+        return Bucket(InMemoryFactBackend(clock=lambda: NOW, events=events), events, None)
+    container = FakeContainer()
+    return Bucket(CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW, events=events),
+                  events, container)
 
 
 def _mem(fact_id: str, *, kind: str | None = "instruction", situation: Situation | None = EMAIL,
@@ -132,3 +137,36 @@ async def test_twenty_kinds_pass_and_repeats_count_once(bucket):   # the thresho
 
 def _no_read(*args, **kwargs):
     raise AssertionError("a refused call must not read")
+
+
+class _Spy(FakeContainer):
+    def __init__(self) -> None:
+        super().__init__()
+        self.queries: list[tuple[str, dict, list]] = []
+
+    def query_items(self, query, parameters=None, partition_key=None):
+        self.queries.append((query, {p["name"]: p["value"] for p in parameters or []}, partition_key))
+        return super().query_items(query, parameters=parameters, partition_key=partition_key)
+
+
+async def test_cosmos_by_kind_reads_named_fields_in_the_indexed_order():   # §3.1: one query, named fields
+    container = _Spy()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.by_kind(("instruction", "instruction"), constraints=True, limit=7)
+    [(query, params, pk)] = container.queries
+    select = query.split(" FROM c ", 1)[0]
+    assert select.startswith("SELECT TOP @n c.id, c.fact, ") and "vector_embeddings" not in select
+    assert query.endswith(" ORDER BY c.constraint DESC, c.learned_at ASC, c.id ASC")
+    assert "(ARRAY_CONTAINS(@kinds, c.kind) OR c.constraint = true)" in query
+    assert (params["@n"], params["@kinds"], pk) == (8, ["instruction"], ["fam1", "shared", "FACTS"])
+    await backend.by_kind(("fact",))
+    plain, _, _ = container.queries[-1]
+    assert "ARRAY_CONTAINS(@kinds, c.kind)" in plain and "c.constraint = true" not in plain
+
+
+async def test_cosmos_by_kind_sends_kinds_as_a_parameter_never_in_the_query():
+    container = _Spy()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.by_kind(("instr'uction",), constraints=True)
+    [(query, params, _)] = container.queries
+    assert "instr'uction" not in query and params["@kinds"] == ["instr'uction"]

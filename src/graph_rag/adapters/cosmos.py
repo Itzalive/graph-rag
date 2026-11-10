@@ -14,7 +14,7 @@ from graph_rag.entities import (
 )
 from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
-    SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, check_situational, fact_state, hit_from_state,
+    SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, check_by_kind, check_situational, fact_state, hit_from_state,
     record_from_state,
 )
 from graph_rag.record import (
@@ -65,6 +65,7 @@ CLAUSE_SITUATED_ENTITIES = ("(NOT IS_DEFINED(c.situation.entities) OR ARRAY_LENG
 CLAUSE_SITUATED_TOPICS = "(NOT IS_DEFINED(c.situation.topics) OR ARRAY_LENGTH(c.situation.topics) = 0)"
 CLAUSE_UNSITUATED = "(NOT IS_DEFINED(c.situation) OR IS_NULL(c.situation))"
 CLAUSE_KIND_IN = "ARRAY_CONTAINS(@kinds, c.kind)"
+CLAUSE_KIND_IN_OR_CONSTRAINT = "(ARRAY_CONTAINS(@kinds, c.kind) OR c.constraint = true)"
 # Needs the composite index (constraint DESC, learned_at ASC, id ASC): Cosmos refuses it otherwise.
 ORDER_SITUATIONAL = "ORDER BY c.constraint DESC, c.learned_at ASC, c.id ASC"
 
@@ -204,6 +205,17 @@ class CosmosFactBackend:
             [*params, {"name": "@kinds", "value": kind_list}],
             "unsituated", limit)
         return [*situated, *unsituated]
+
+    async def by_kind(self, kinds: Collection[str], *, constraints: bool = False,
+                      limit: int = 100) -> list[FactRecord]:
+        """Current memories whose kind is one of `kinds`, or, with `constraints`, that carry a true constraint; one read
+        of named fields in the situational order (the composite index), cut to `limit` (event query `by_kind`). A
+        result is for reading only, as situational's is."""
+        kind_list = check_by_kind(kinds, constraints, limit)
+        filters, params = self._memory_filters(include_expired=False, include_future=False)
+        clause = CLAUSE_KIND_IN_OR_CONSTRAINT if constraints else CLAUSE_KIND_IN
+        return await self._situational_read([*filters, clause], [*params, {"name": "@kinds", "value": kind_list}],
+                                            "by_kind", limit)
 
     # --- RecordedFactBackend ---
 
