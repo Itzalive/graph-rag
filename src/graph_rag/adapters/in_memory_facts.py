@@ -13,8 +13,7 @@ from graph_rag.entities import (
 from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
     FactRecord, FactSearchHit, FactSearchRequest, check_by_kind, check_situational, cosine_distance, fact_state,
-    hit_from_record,
-    is_listed, situation_applies, situational_key,
+    hit_from_record, is_listed, situation_applies, situational_key,
 )
 from graph_rag.record import (
     HISTORY_DEFAULT_LIMIT, AlreadyAppliedError, ChangeSource, EntityChange, FactChange, OpMarker, StaleWriteError,
