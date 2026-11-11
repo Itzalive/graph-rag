@@ -71,6 +71,7 @@ _CLAUSES: dict[str, Callable[[dict, dict], bool]] = {
     adapter.CLAUSE_UNSITUATED: lambda d, p: d.get("situation") is None,
     adapter.CLAUSE_KIND_IN: lambda d, p: d.get("kind") in p["@kinds"],
     adapter.CLAUSE_KIND_IN_OR_CONSTRAINT: lambda d, p: d.get("kind") in p["@kinds"] or d.get("constraint") is True,
+    adapter.CLAUSE_KIND_NOT_EXCLUDED: lambda d, p: d.get("kind") is None or d["kind"] not in p["@exclude_kinds"],
 }
 
 

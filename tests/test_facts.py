@@ -263,3 +263,12 @@ def test_hits_carry_situation_and_constraint():
         "entities-disjoint", "topics-never"])
 def test_situation_applies(situation, channel, types, entity_ids, expected):
     assert situation_applies(situation, channel, types, entity_ids) is expected
+
+
+def test_a_search_request_refuses_a_string_or_more_than_twenty_kinds():   # S3c spec 2.1
+    FactSearchRequest(query_vector=(1.0,), limit=1, exclude_kinds=tuple(f"k{i}" for i in range(20)))
+    FactSearchRequest(query_vector=(1.0,), limit=1, exclude_kinds=("a",) * 25)   # 1 distinct
+    with pytest.raises(ValueError):
+        FactSearchRequest(query_vector=(1.0,), limit=1, exclude_kinds=tuple(f"k{i}" for i in range(21)))
+    with pytest.raises(TypeError):
+        FactSearchRequest(query_vector=(1.0,), limit=1, exclude_kinds="instruction")

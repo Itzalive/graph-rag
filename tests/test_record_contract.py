@@ -667,3 +667,29 @@ def test_a_backend_without_the_new_operations_is_not_a_recorded_backend():
         situational = None      # a runtime_checkable protocol treats a None attribute as missing
 
     assert not isinstance(Old(clock=lambda: NOW), RecordedFactBackend)
+
+
+async def test_a_search_leaves_out_excluded_kinds_and_keeps_memories_without_one(make_backend):   # S3c spec 2.1
+    backend = make_backend()
+    await backend.upsert_fact(_rec("m-instr", "Alice swims rule", kind="instruction", vector_embeddings=(1.0, 0.0)))
+    await backend.upsert_fact(_rec("m-fact", "Alice swims fact", kind="fact", vector_embeddings=(1.0, 0.0)))
+    await backend.upsert_fact(_rec("m-none", "Alice swims old", kind=None, vector_embeddings=(1.0, 0.0)))
+
+    async def ids(**kw) -> list[str]:
+        hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=10, **kw))
+        return sorted(h.fact_id for h in hits)
+
+    assert await ids() == ["m-fact", "m-instr", "m-none"]
+    assert await ids(exclude_kinds=("instruction",)) == ["m-fact", "m-none"]
+    assert await ids(exclude_kinds=("instruction", "fact")) == ["m-none"]
+
+
+async def test_a_cosmos_document_whose_kind_is_null_stays_searchable():   # S3c spec 2.1
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.upsert_fact(_rec("m-null", "Alice swims", kind="fact", vector_embeddings=(1.0, 0.0)))
+    stored = container.read_item("m-null", ["fam1", "shared", "FACTS"])
+    container.upsert_item({**stored, "kind": None})
+    hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5,
+                                                        exclude_kinds=("instruction",)))
+    assert [h.fact_id for h in hits] == ["m-null"]

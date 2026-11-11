@@ -66,6 +66,7 @@ CLAUSE_SITUATED_TOPICS = "(NOT IS_DEFINED(c.situation.topics) OR ARRAY_LENGTH(c.
 CLAUSE_UNSITUATED = "(NOT IS_DEFINED(c.situation) OR IS_NULL(c.situation))"
 CLAUSE_KIND_IN = "ARRAY_CONTAINS(@kinds, c.kind)"
 CLAUSE_KIND_IN_OR_CONSTRAINT = "(ARRAY_CONTAINS(@kinds, c.kind) OR c.constraint = true)"
+CLAUSE_KIND_NOT_EXCLUDED = "(NOT IS_DEFINED(c.kind) OR NOT ARRAY_CONTAINS(@exclude_kinds, c.kind))"
 # Needs the composite index (constraint DESC, learned_at ASC, id ASC): Cosmos refuses it otherwise.
 ORDER_SITUATIONAL = "ORDER BY c.constraint DESC, c.learned_at ASC, c.id ASC"
 
@@ -164,6 +165,9 @@ class CosmosFactBackend:
             filters.append(CLAUSE_NOT_EXCLUDED_VERSION)
             params.append({"name": "@exclude_keys",
                            "value": [f"{fact_id}:{seq}" for fact_id, seq in request.exclude_versions]})
+        if request.exclude_kinds:
+            filters.append(CLAUSE_KIND_NOT_EXCLUDED)
+            params.append({"name": "@exclude_kinds", "value": sorted(set(request.exclude_kinds))})
         where_clause = " AND ".join(filters)
         # Named fields, never `c`: each vector_embeddings is ~22 KB of JSON that the hit never uses. A field that is not
         # listed in _SEARCH_FIELDS does not reach FactSearchHit.extras; add it there when a new fact field is introduced.

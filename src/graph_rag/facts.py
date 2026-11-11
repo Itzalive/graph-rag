@@ -97,10 +97,14 @@ class FactSearchRequest:
     exclude_versions: tuple[tuple[str, int], ...] = ()
     include_expired: bool = False
     include_future: bool = False
+    exclude_kinds: tuple[str, ...] = ()   # kinds left out of the search; a memory with no kind is never left out (S3c, 0.7.0)
 
     def __post_init__(self) -> None:
         if self.limit <= 0:
             raise ValueError("limit must be positive")
+        check_values("exclude_kinds", self.exclude_kinds)
+        if len(set(self.exclude_kinds)) > BY_KIND_MAX_KINDS:
+            raise ValueError(f"exclude_kinds must have at most {BY_KIND_MAX_KINDS} distinct values")
 
 
 @dataclass(frozen=True)

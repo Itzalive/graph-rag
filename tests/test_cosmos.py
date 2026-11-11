@@ -239,3 +239,24 @@ async def test_search_sql_sends_no_version_clause_when_none_is_named():   # clau
     query: str = container.query_items.call_args[1]["query"]
     names = {p["name"] for p in container.query_items.call_args[1]["parameters"]}
     assert "@exclude_keys" not in query and "@exclude_keys" not in names and "@exclude_ids" in query
+
+
+async def test_search_sql_binds_the_excluded_kinds_and_guards_a_missing_kind():   # S3c spec 2.1
+    backend, container = _backend()
+    container.query_items.return_value = iter([])
+    await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5,
+                                                 exclude_kinds=("opinion", "instruction", "opinion")))
+    query: str = container.query_items.call_args[1]["query"]
+    params = {p["name"]: p["value"] for p in container.query_items.call_args[1]["parameters"]}
+    assert "(NOT IS_DEFINED(c.kind) OR NOT ARRAY_CONTAINS(@exclude_kinds, c.kind))" in query
+    assert params["@exclude_kinds"] == ["instruction", "opinion"]
+    assert "'instruction'" not in query
+
+
+async def test_search_sql_sends_no_kind_clause_when_none_is_excluded():   # S3c spec 2.1
+    backend, container = _backend()
+    container.query_items.return_value = iter([])
+    await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5))
+    query: str = container.query_items.call_args[1]["query"]
+    names = {p["name"] for p in container.query_items.call_args[1]["parameters"]}
+    assert "@exclude_kinds" not in query and "@exclude_kinds" not in names

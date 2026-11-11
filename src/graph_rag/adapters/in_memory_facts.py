@@ -56,9 +56,12 @@ class InMemoryFactBackend:
         now = read_clock(self._clock)
         exclude = set(request.exclude_ids)
         excluded_versions = set(request.exclude_versions)
+        excluded_kinds = set(request.exclude_kinds)
         scored: list[tuple[float, FactRecord]] = []
         for record in self._facts.values():
             if record.fact_id in exclude or (record.fact_id, record.seq) in excluded_versions:
+                continue
+            if record.kind is not None and record.kind in excluded_kinds:
                 continue
             if not is_listed(record, now, include_expired=request.include_expired,
                              include_future=request.include_future):
