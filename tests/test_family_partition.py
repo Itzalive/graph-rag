@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.entities import EntityRecord, Identifier
+from graph_rag.facts import FactRecord
 from graph_rag.record import ChangeSource, StaleWriteError
 from cosmos_fake import FakeContainer
 
@@ -56,3 +57,12 @@ async def test_another_familys_history_is_never_read():   # AC-S2-21
     await fam1.replace_entities([EntityRecord(**{**vars(ours), "aliases": ("Ours",)})], source=SOURCE, at=NOW)
     assert [c.after["aliases"] for c in await fam2.entity_history("ent-club")] == [["Theirs"]]
     assert [c.after["aliases"] for c in await fam1.entity_history("ent-club")] == [["Ours"]]
+
+
+async def test_another_familys_memories_are_never_counted():   # S7 spec §5, AGENTS.md: a read never crosses families
+    fam1, fam2 = _two_families()
+    await fam2.upsert_fact(FactRecord(fact_id="m1", body="Their swim times", created_at=NOW, updated_at=NOW,
+                                      topics=("activities",)))
+    counts = await fam1.topic_counts()
+    assert (counts.by_topic, counts.no_topic, counts.total) == ({}, 0, 0)
+    assert (await fam2.topic_counts()).by_topic == {"activities": 1}

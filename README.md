@@ -93,6 +93,11 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
   raising `situational.limit_reached` with query `by_kind` when it drops any. `kinds` holds at most 20 distinct values,
   and no kinds without `constraints` is refused (`ValueError`, before any read); a string is a `TypeError`. The records
   carry no vectors and are for reading only, as `situational`'s are; on Cosmos it uses the same composite index.
+- `topic_counts()` (0.8.0) returns `TopicCounts(by_topic, no_topic, total)` over current memories (as `situational`
+  reads them: not deleted, forgotten or purged; started and not ended at the backend's clock), of every kind:
+  `by_topic` maps each topic to the memories listing it (a memory with two topics counts under both), `no_topic` counts
+  memories whose topics are missing or empty, `total` counts each memory once. On Cosmos it is three aggregate queries
+  in the bucket that read topic names and counts only.
 
 ### Entities
 

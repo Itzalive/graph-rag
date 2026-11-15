@@ -5,8 +5,11 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from graph_rag.adapters.cosmos import CosmosFactBackend
-from graph_rag.facts import FactRecord, FactSearchRequest, Holder, Situation
+from graph_rag.adapters.cosmos import (
+    CLAUSE_MEMORY, CLAUSE_NOT_DELETED, CLAUSE_NOT_EXPIRED, CLAUSE_NOT_FORGOTTEN, CLAUSE_NOT_PURGED, CLAUSE_STARTED,
+    CosmosFactBackend,
+)
+from graph_rag.facts import FactRecord, FactSearchRequest, Holder, Situation, TopicCounts
 
 
 def _backend(family_id: str = "fam1") -> tuple[CosmosFactBackend, MagicMock]:
@@ -260,3 +263,31 @@ async def test_search_sql_sends_no_kind_clause_when_none_is_excluded():   # S3c 
     query: str = container.query_items.call_args[1]["query"]
     names = {p["name"] for p in container.query_items.call_args[1]["parameters"]}
     assert "@exclude_kinds" not in query and "@exclude_kinds" not in names
+
+
+async def test_topic_counts_sends_three_aggregates_over_the_current_clauses():   # S7 spec §3
+    backend, container = _backend()
+    container.query_items.side_effect = [iter([{"topic": "meals", "n": 2}]), iter([1]), iter([3])]
+    counts = await backend.topic_counts()
+    assert counts == TopicCounts(by_topic={"meals": 2}, no_topic=1, total=3)
+    queries = [c[1]["query"] for c in container.query_items.call_args_list]
+    current = " AND ".join([CLAUSE_MEMORY, CLAUSE_NOT_DELETED, CLAUSE_NOT_FORGOTTEN, CLAUSE_NOT_PURGED,
+                            CLAUSE_NOT_EXPIRED, CLAUSE_STARTED])
+    assert queries == [
+        f"SELECT t AS topic, COUNT(1) AS n FROM c JOIN t IN c.topics WHERE {current} GROUP BY t",
+        f"SELECT VALUE COUNT(1) FROM c WHERE {current} AND "
+        "(NOT IS_DEFINED(c.topics) OR IS_NULL(c.topics) OR ARRAY_LENGTH(c.topics) = 0)",
+        f"SELECT VALUE COUNT(1) FROM c WHERE {current}",
+    ]
+    for call in container.query_items.call_args_list:
+        assert call[1]["partition_key"] == ["fam1", "shared", "FACTS"]
+        assert [p["name"] for p in call[1]["parameters"]] == ["@now"]
+    assert all(" c.body" not in q and "SELECT *" not in q for q in queries)
+
+
+async def test_topic_counts_sum_a_result_split_over_rows():   # S7 spec §3
+    backend, container = _backend()
+    container.query_items.side_effect = [iter([{"topic": "meals", "n": 2}, {"topic": "meals", "n": 1},
+                                               {"topic": "school", "n": 1}]), iter([1, 2]), iter([])]
+    counts = await backend.topic_counts()
+    assert counts == TopicCounts(by_topic={"meals": 3, "school": 1}, no_topic=3, total=0)

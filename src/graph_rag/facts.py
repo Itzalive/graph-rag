@@ -320,6 +320,15 @@ def is_listed(record: FactRecord, now: datetime, *, include_expired: bool = Fals
     return True
 
 
+@dataclass(frozen=True)
+class TopicCounts:
+    """Current memories by topic (0.8.0): `by_topic` maps each topic to the memories listing it (a memory with two
+    topics counts under both), `no_topic` counts memories with no topics, `total` counts each memory once."""
+    by_topic: dict[str, int]
+    no_topic: int
+    total: int
+
+
 SITUATIONAL_MAX_LIMIT = 100
 SITUATIONAL_MAX_VALUES = 200
 

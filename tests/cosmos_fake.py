@@ -5,7 +5,8 @@ none; a create on an existing id fails with 409 at that operation's index, as th
 (azure/cosmos/exceptions.py CosmosBatchOperationError). A replace, alone or in a batch, honours an etag condition with
 412 and fails with 404 on a missing id. Queries are answered only for the clauses the adapter defines: an unknown WHERE
 clause raises AssertionError, so a filter the adapter drops or misspells fails a test instead of passing silently. The
-situational order is applied before TOP; a select of named fields returns only those fields."""
+situational order is applied before TOP; a select of named fields returns only those fields. Two aggregates are
+answered: `SELECT VALUE COUNT(1)` and the topic count over `JOIN t IN c.topics ... GROUP BY t`."""
 from __future__ import annotations
 
 import copy
@@ -71,6 +72,7 @@ _CLAUSES: dict[str, Callable[[dict, dict], bool]] = {
     adapter.CLAUSE_UNSITUATED: lambda d, p: d.get("situation") is None,
     adapter.CLAUSE_KIND_IN: lambda d, p: d.get("kind") in p["@kinds"],
     adapter.CLAUSE_KIND_IN_OR_CONSTRAINT: lambda d, p: d.get("kind") in p["@kinds"] or d.get("constraint") is True,
+    adapter.CLAUSE_NO_TOPICS: lambda d, p: not d.get("topics"),
     adapter.CLAUSE_KIND_NOT_EXCLUDED: lambda d, p: d.get("kind") is None or d["kind"] not in p["@exclude_kinds"],
 }
 
@@ -142,11 +144,19 @@ class FakeContainer:
         rows = [copy.deepcopy(d) for key, d in self.docs.items() if list(key[:3]) == list(partition_key)]
         select, rest = query.split(" FROM c", 1)
         where = rest.split(" WHERE ", 1)[1] if " WHERE " in rest else ""
-        where = where.split(" ORDER BY ", 1)[0]
+        where = where.split(" ORDER BY ", 1)[0].split(" GROUP BY ", 1)[0]
         for clause in (where.split(" AND ") if where else []):
             if clause not in _CLAUSES:
                 raise AssertionError(f"FakeContainer does not know the clause {clause!r}")
             rows = [d for d in rows if _CLAUSES[clause](d, params)]
+        if select == "SELECT VALUE COUNT(1)":
+            return [len(rows)]
+        if rest.startswith(" JOIN t IN c.topics ") and query.endswith(" GROUP BY t"):
+            counts: dict[str, int] = {}
+            for d in rows:
+                for topic in d.get("topics") or []:
+                    counts[topic] = counts.get(topic, 0) + 1
+            return [{"topic": topic, "n": n} for topic, n in counts.items()]
         if "ORDER BY c.seq ASC" in query:
             rows.sort(key=lambda d: d["seq"])
         if adapter.ORDER_SITUATIONAL in query:

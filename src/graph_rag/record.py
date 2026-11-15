@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
 from graph_rag.entities import EntityRecord
-from graph_rag.facts import FactBackend, FactRecord
+from graph_rag.facts import FactBackend, FactRecord, TopicCounts
 
 HISTORY_DEFAULT_LIMIT = 100
 HISTORY_MAX_LIMIT = 500
@@ -241,6 +241,7 @@ class RecordedFactBackend(FactBackend, Protocol):
     async def by_kind(self, kinds: Collection[str], *, constraints: bool = False,
                       limit: int = 100) -> list[FactRecord]: ...
     async def find_by_aliases(self, keys: Iterable[str], *, limit: int = 50) -> list[EntityRecord]: ...
+    async def topic_counts(self) -> TopicCounts: ...
     async def replace_entities(self, updates: Sequence[EntityRecord], *, source: ChangeSource,
                                at: datetime) -> None: ...
     async def entity_history(self, entity_id: str, *, after_seq: int = -1,

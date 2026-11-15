@@ -14,7 +14,7 @@ from graph_rag.entities import (
 )
 from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
-    SYSTEM_KEYS, FactRecord, FactSearchHit, FactSearchRequest, check_by_kind, check_situational, fact_state, hit_from_state,
+    SYSTEM_KEYS, FactRecord, FactSearchHit, TopicCounts, FactSearchRequest, check_by_kind, check_situational, fact_state, hit_from_state,
     record_from_state,
 )
 from graph_rag.record import (
@@ -67,6 +67,7 @@ CLAUSE_UNSITUATED = "(NOT IS_DEFINED(c.situation) OR IS_NULL(c.situation))"
 CLAUSE_KIND_IN = "ARRAY_CONTAINS(@kinds, c.kind)"
 CLAUSE_KIND_IN_OR_CONSTRAINT = "(ARRAY_CONTAINS(@kinds, c.kind) OR c.constraint = true)"
 CLAUSE_KIND_NOT_EXCLUDED = "(NOT IS_DEFINED(c.kind) OR NOT ARRAY_CONTAINS(@exclude_kinds, c.kind))"
+CLAUSE_NO_TOPICS = "(NOT IS_DEFINED(c.topics) OR IS_NULL(c.topics) OR ARRAY_LENGTH(c.topics) = 0)"
 # Needs the composite index (constraint DESC, learned_at ASC, id ASC): Cosmos refuses it otherwise.
 ORDER_SITUATIONAL = "ORDER BY c.constraint DESC, c.learned_at ASC, c.id ASC"
 
@@ -220,6 +221,25 @@ class CosmosFactBackend:
         clause = CLAUSE_KIND_IN_OR_CONSTRAINT if constraints else CLAUSE_KIND_IN
         return await self._situational_read([*filters, clause], [*params, {"name": "@kinds", "value": kind_list}],
                                             "by_kind", limit)
+
+    async def topic_counts(self) -> TopicCounts:
+        """Current memories (the situational read's clauses) counted by topic, with none, and in all: three aggregate
+        queries in this bucket that read topic names and counts only, never a document. Each result is summed over its
+        rows, so a result split over pages still counts right."""
+        filters, params = self._memory_filters(include_expired=False, include_future=False)
+        where = " AND ".join(filters)
+
+        def query(sql: str) -> list[Any]:
+            return list(self._container.query_items(query=sql, parameters=params, partition_key=self._pk))
+
+        rows = await asyncio.to_thread(
+            query, f"SELECT t AS topic, COUNT(1) AS n FROM c JOIN t IN c.topics WHERE {where} GROUP BY t")
+        no_topic = await asyncio.to_thread(query, f"SELECT VALUE COUNT(1) FROM c WHERE {where} AND {CLAUSE_NO_TOPICS}")
+        total = await asyncio.to_thread(query, f"SELECT VALUE COUNT(1) FROM c WHERE {where}")
+        by_topic: dict[str, int] = {}
+        for row in rows:
+            by_topic[row["topic"]] = by_topic.get(row["topic"], 0) + row["n"]
+        return TopicCounts(by_topic=by_topic, no_topic=sum(no_topic), total=sum(total))
 
     # --- RecordedFactBackend ---
 

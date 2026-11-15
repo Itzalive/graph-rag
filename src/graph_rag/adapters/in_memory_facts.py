@@ -12,7 +12,7 @@ from graph_rag.entities import (
 )
 from graph_rag.events import NO_EVENTS, EventSink
 from graph_rag.facts import (
-    FactRecord, FactSearchHit, FactSearchRequest, check_by_kind, check_situational, cosine_distance, fact_state,
+    FactRecord, FactSearchHit, FactSearchRequest, TopicCounts, check_by_kind, check_situational, cosine_distance, fact_state,
     hit_from_record, is_listed, situation_applies, situational_key,
 )
 from graph_rag.record import (
@@ -108,6 +108,16 @@ class InMemoryFactBackend:
         rows = sorted((r for r in self._facts.values() if is_listed(r, now)
                        and (r.kind in kind_list or (constraints and r.constraint))), key=situational_key)
         return self._cut(rows, "by_kind", limit)
+
+    async def topic_counts(self) -> TopicCounts:
+        """Current memories counted by topic, with none, and in all (the situational read's rule for current)."""
+        now = read_clock(self._clock)
+        current = [r for r in self._facts.values() if is_listed(r, now)]
+        by_topic: dict[str, int] = {}
+        for record in current:
+            for topic in record.topics:
+                by_topic[topic] = by_topic.get(topic, 0) + 1
+        return TopicCounts(by_topic=by_topic, no_topic=sum(1 for r in current if not r.topics), total=len(current))
 
     async def write_change(self, record: FactRecord, changes: Sequence[FactChange],
                            entities: Sequence[EntityRecord] = (),

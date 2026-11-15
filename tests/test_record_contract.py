@@ -10,7 +10,7 @@ from azure.cosmos.exceptions import CosmosBatchOperationError
 from graph_rag.adapters.cosmos import CosmosFactBackend
 from graph_rag.adapters.in_memory_facts import InMemoryFactBackend
 from graph_rag.entities import EntityRecord, Identifier, MissingHandleError
-from graph_rag.facts import FactRecord, FactSearchRequest, Situation, fact_state
+from graph_rag.facts import FactRecord, FactSearchRequest, Situation, TopicCounts, fact_state
 from graph_rag.record import AlreadyAppliedError, ChangeSource, FactChange, OpMarker, RecordedFactBackend, StaleWriteError, WriteCheckError
 from cosmos_fake import FakeContainer  # tests/ is on sys.path (no __init__.py; pytest prepend import mode)
 
@@ -669,7 +669,7 @@ async def test_merged_from_round_trips_in_order(make_backend):   # AC-S7-6
 def test_both_backends_are_recorded_backends(make_backend):
     backend = make_backend()
     assert isinstance(backend, RecordedFactBackend)
-    for name in ("situational", "by_kind", "find_by_aliases", "replace_entities", "entity_history"):
+    for name in ("situational", "by_kind", "find_by_aliases", "replace_entities", "entity_history", "topic_counts"):
         assert name in RecordedFactBackend.__dict__, name
 
 
@@ -740,3 +740,28 @@ async def test_a_merged_entity_document_holds_no_lookup_keys():   # S7 spec §1.
     await backend.replace_entities([replace(read, merged_into="person-kept")], source=SRC, at=NOW)
     doc = container.docs[("fam1", "shared", "FACTS", "person-gone")]
     assert (doc["alias_keys"], doc["identifier_keys"]) == ([], [])
+
+
+async def test_topic_counts_count_only_current_memories(make_backend):   # AC-S7-10
+    backend = make_backend()
+    day = timedelta(days=1)
+    for record in (
+        _rec("m-meals", "a", topics=("meals",)),
+        _rec("m-two", "b", topics=("meals", "school"), kind="instruction"),
+        _rec("m-none", "c"),
+        _rec("m-old-topic", "d", topics=("pets",)),                                   # off a caller's list: counted
+        _rec("m-ended", "e", topics=("meals",), valid_until=NOW - day, lifespan="dated", validity_basis="stated"),
+        _rec("m-future", "f", topics=("school",), valid_from=NOW + day, validity_basis="stated"),
+        _rec("m-deleted", "g", topics=("meals",), deleted=True, deleted_at=NOW - day),
+        _rec("m-forgotten", "h", forgotten_at=NOW - day),
+        _rec("m-purged", "i", topics=("school",), purged_at=NOW - day),
+    ):
+        await backend.upsert_fact(record)
+    await backend.upsert_entity(BROWNIES)
+    counts = await backend.topic_counts()
+    assert counts.by_topic == {"meals": 2, "school": 1, "pets": 1}
+    assert (counts.no_topic, counts.total) == (1, 4)
+
+
+async def test_topic_counts_of_an_empty_bucket_are_zero(make_backend):   # AC-S7-10
+    assert await make_backend().topic_counts() == TopicCounts(by_topic={}, no_topic=0, total=0)
