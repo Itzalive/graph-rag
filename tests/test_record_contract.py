@@ -704,3 +704,39 @@ async def test_a_cosmos_document_whose_kind_is_null_stays_searchable():   # S3c 
     hits = await backend.search_facts(FactSearchRequest(query_vector=(1.0, 0.0), limit=5,
                                                         exclude_kinds=("instruction",)))
     assert [h.fact_id for h in hits] == ["m-null"]
+
+
+GONE = EntityRecord(entity_id="person-gone", type="person", name="Bobby Smith", handle="bobby", aliases=("Bobs",),
+                    identifiers=(Identifier("address", "bobby@example.com"), Identifier("domain", "bobby.example")),
+                    merged_into="person-kept")
+
+
+async def test_a_merged_entity_is_never_looked_up(make_backend):   # AC-S7-6
+    backend = make_backend()
+    await backend.upsert_entity(GONE)
+    await backend.upsert_entity(replace(GONE, entity_id="person-live", handle="bobby_2", merged_into=None,
+                                        identifiers=(Identifier("address", "live@example.com"),)))
+    assert [e.entity_id for e in await backend.find_by_alias("person", "bobby smith")] == ["person-live"]
+    assert [e.entity_id for e in await backend.find_by_alias("person", "BOBS")] == ["person-live"]
+    assert [e.entity_id for e in await backend.find_by_aliases(["Bobby Smith", "bobs"])] == ["person-live"]
+    assert await backend.find_by_identifier("address", "bobby@example.com") == []
+    assert await backend.find_by_identifier("domain", "bobby.example") == []
+    assert [e.entity_id for e in await backend.find_by_identifier("address", "live@example.com")] == ["person-live"]
+    read = await backend.read_entity("person-gone")
+    assert (read.name, read.aliases, read.identifiers, read.merged_into) == (
+        "Bobby Smith", ("Bobs",), GONE.identifiers, "person-kept")
+    assert [e.entity_id for e in await backend.read_entities(["person-gone"])] == ["person-gone"]
+    assert {e.entity_id for e in await backend.list_entities(type="person")} == {"person-gone", "person-live"}
+
+
+async def test_a_merged_entity_document_holds_no_lookup_keys():   # S7 spec §1.2, every Cosmos write path
+    container = FakeContainer()
+    backend = CosmosFactBackend(container=container, family_id="fam1", clock=lambda: NOW)
+    await backend.upsert_entity(GONE)
+    doc = container.docs[("fam1", "shared", "FACTS", "person-gone")]
+    assert (doc["alias_keys"], doc["identifier_keys"]) == ([], [])
+    await backend.upsert_entity(replace(GONE, merged_into=None))
+    [read] = await backend.read_entities(["person-gone"])
+    await backend.replace_entities([replace(read, merged_into="person-kept")], source=SRC, at=NOW)
+    doc = container.docs[("fam1", "shared", "FACTS", "person-gone")]
+    assert (doc["alias_keys"], doc["identifier_keys"]) == ([], [])

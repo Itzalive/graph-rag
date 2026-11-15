@@ -39,6 +39,10 @@ class InMemoryFactBackend:
         """Store an entity under a new version, as Cosmos gives a written document a new _etag."""
         self._entities[entity.entity_id] = replace(entity, version=str(next(self._entity_versions)))
 
+    async def _lookable(self, *, type: str | None = None) -> list[EntityRecord]:
+        """The entities a lookup by name, alias or identifier may return: every one not merged (0.8.0)."""
+        return [e for e in await self.list_entities(type=type) if e.merged_into is None]
+
     async def upsert_fact(self, record: FactRecord) -> None:
         self._facts[record.fact_id] = record
 
@@ -190,7 +194,7 @@ class InMemoryFactBackend:
         return sorted((e for e in self._entities.values() if type is None or e.type == type), key=lambda e: e.entity_id)
 
     async def find_by_alias(self, type: str, alias: str) -> list[EntityRecord]:
-        return [e for e in await self.list_entities(type=type) if alias_key(alias) in alias_keys(e)]
+        return [e for e in await self._lookable(type=type) if alias_key(alias) in alias_keys(e)]
 
     async def find_by_aliases(self, keys: Iterable[str], *, limit: int = 50) -> list[EntityRecord]:
         check_alias_limit(limit)
@@ -200,7 +204,7 @@ class InMemoryFactBackend:
         if not used:
             return []
         wanted = set(used)
-        matches = [e for e in await self.list_entities() if wanted.intersection(alias_keys(e))]
+        matches = [e for e in await self._lookable() if wanted.intersection(alias_keys(e))]
         if len(matches) > ALIASES_MAX_READ:
             matches = matches[:ALIASES_MAX_READ]
             self._events.count("aliases.read_capped")
@@ -210,4 +214,4 @@ class InMemoryFactBackend:
         return ranked[:limit]
 
     async def find_by_identifier(self, kind: str, value: str) -> list[EntityRecord]:
-        return [e for e in await self.list_entities() if identifier_key(kind, value) in identifier_keys(e)]
+        return [e for e in await self._lookable() if identifier_key(kind, value) in identifier_keys(e)]

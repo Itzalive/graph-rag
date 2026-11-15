@@ -108,6 +108,10 @@ one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueEr
   is the caller's.
 - `merged_from` (0.8.0) is the ids of the entities merged into this one, in the caller's order; it is stored only when
   non-empty and a document without it reads as `()`. What it means to readers is the caller's.
+- A merged entity (0.8.0: `merged_into` set) is never returned by `find_by_alias`, `find_by_aliases` or
+  `find_by_identifier`: on Cosmos it is stored with empty `alias_keys` and `identifier_keys`, and the in-memory
+  adapter skips it. `read_entity`, `read_entities` and `list_entities` still return it, with its name, aliases and
+  identifiers as stored; `alias_keys(entity)` still lists its names.
 - `find_by_aliases(keys, *, limit=50)` returns entities of any type whose name or aliases match one of `keys`, in one
   query. Keys are folded as `find_by_alias` folds them, empty ones dropped and repeats removed in the caller's order;
   past 300 distinct keys only the first 300 are used (`aliases.keys_capped`); no keys returns `[]` without a read. At

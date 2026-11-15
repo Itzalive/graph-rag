@@ -57,9 +57,9 @@ async def test_any_type_matches_and_names_and_aliases_both_count(bucket):
     assert await _ids(bucket, ["oakfield", "annie"]) == ["org-1", "person-1"]
 
 
-async def test_a_found_entity_reads_back_whole_with_its_version(bucket):   # §1 merged_into, version on every read
+async def test_a_found_entity_reads_back_whole_with_its_version(bucket):   # version on every read
     stored = EntityRecord(entity_id="person-1", type="person", name="Ann", handle="ann", aliases=("Annie",),
-                          identifiers=(Identifier("address", "ann@example.com"),), merged_into="person-0")
+                          identifiers=(Identifier("address", "ann@example.com"),))
     await bucket.backend.upsert_entity(stored)
     [found] = await bucket.backend.find_by_aliases(["annie"])
     read = await bucket.backend.read_entity("person-1")

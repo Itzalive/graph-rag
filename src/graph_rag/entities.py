@@ -77,6 +77,7 @@ def rank_alias_matches(entities: Iterable[EntityRecord], keys: Collection[str]) 
 
 
 def entity_to_state(entity: EntityRecord) -> dict[str, Any]:
+    # A merged entity is stored with no lookup keys: no lookup by name, alias or identifier returns it (0.8.0).
     state: dict[str, Any] = {
         "id": entity.entity_id,
         "doc_type": "entity",
@@ -86,8 +87,8 @@ def entity_to_state(entity: EntityRecord) -> dict[str, Any]:
         "aliases": list(entity.aliases),
         "identifiers": [{"kind": i.kind, "value": i.value} for i in entity.identifiers],
         "seq": entity.seq,
-        "alias_keys": alias_keys(entity),
-        "identifier_keys": identifier_keys(entity),
+        "alias_keys": [] if entity.merged_into is not None else alias_keys(entity),
+        "identifier_keys": [] if entity.merged_into is not None else identifier_keys(entity),
     }
     if entity.merged_into is not None:
         state["merged_into"] = entity.merged_into

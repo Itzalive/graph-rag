@@ -77,3 +77,9 @@ def test_merged_from_is_stored_and_read():   # S7 spec §1.2
 
 def test_merged_from_is_part_of_equality():   # S7 spec §1.2
     assert replace(JO, merged_from=("person-9",)) != JO
+
+
+def test_alias_keys_of_a_merged_entity_still_count_its_names():   # S7 spec §1.2: the helper is unchanged
+    merged = replace(JO, merged_into="person-2")
+    assert alias_keys(merged) == ["grandma", "jo jones"]
+    assert entity_to_state(merged)["alias_keys"] == []
