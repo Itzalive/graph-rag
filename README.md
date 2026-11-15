@@ -117,6 +117,8 @@ one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueEr
   `find_by_identifier`: on Cosmos it is stored with empty `alias_keys` and `identifier_keys`, and the in-memory
   adapter skips it. `read_entity`, `read_entities` and `list_entities` still return it, with its name, aliases and
   identifiers as stored; `alias_keys(entity)` still lists its names.
+  A merged entity written by an earlier version (before 0.8.0 cleared lookup keys) keeps its stored keys on Cosmos
+  until it is written again, so Cosmos lookups may still return it; rewrite such entities when upgrading.
 - `find_by_aliases(keys, *, limit=50)` returns entities of any type whose name or aliases match one of `keys`, in one
   query. Keys are folded as `find_by_alias` folds them, empty ones dropped and repeats removed in the caller's order;
   past 300 distinct keys only the first 300 are used (`aliases.keys_capped`); no keys returns `[]` without a read. At
