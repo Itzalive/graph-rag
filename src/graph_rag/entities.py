@@ -18,7 +18,7 @@ class EntityRecord:
     """An entity in a bucket. `handle` is the caller's readable id for it (its rule is the caller's); it is not an alias
     key: find_by_alias matches the name and aliases only. `version` is set by every read (Cosmos: the document's _etag;
     in memory: a counter) and moves on every write; it is never stored and not part of equality. An update carries the
-    version it read. `merged_into` is stored only when set."""
+    version it read. `merged_into` is stored only when set, `merged_from` only when non-empty."""
     entity_id: str
     type: str
     name: str
@@ -28,6 +28,7 @@ class EntityRecord:
     seq: int = 0
     version: str | None = field(default=None, compare=False)
     merged_into: str | None = None   # the entity this one was merged into; what it means to readers is the caller's
+    merged_from: tuple[str, ...] = ()   # the entities merged into this one; what it means to readers is the caller's
 
 
 def alias_key(alias: str) -> str:
@@ -90,6 +91,8 @@ def entity_to_state(entity: EntityRecord) -> dict[str, Any]:
     }
     if entity.merged_into is not None:
         state["merged_into"] = entity.merged_into
+    if entity.merged_from:
+        state["merged_from"] = list(entity.merged_from)
     return state
 
 
@@ -115,6 +118,7 @@ def entity_from_state(doc: dict[str, Any]) -> EntityRecord:
         seq=doc.get("seq", 0),
         version=doc.get("_etag"),
         merged_into=doc.get("merged_into"),
+        merged_from=tuple(doc.get("merged_from") or ()),
     )
 
 

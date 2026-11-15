@@ -61,3 +61,19 @@ def test_merged_into_is_stored_and_read():   # AC-S1-3
 
 def test_merged_into_is_part_of_equality():   # spec §1
     assert replace(JO, merged_into="person-2") != JO
+
+
+def test_an_entity_without_merged_from_stores_no_key():   # S7 spec §1.2
+    assert "merged_from" not in entity_to_state(JO)
+    assert entity_from_state({**entity_to_state(JO), "_etag": "e1"}).merged_from == ()
+
+
+def test_merged_from_is_stored_and_read():   # S7 spec §1.2
+    entity = replace(JO, merged_from=("person-9", "person-3"))
+    state = entity_to_state(entity)
+    assert state["merged_from"] == ["person-9", "person-3"]
+    assert entity_from_state(state) == entity
+
+
+def test_merged_from_is_part_of_equality():   # S7 spec §1.2
+    assert replace(JO, merged_from=("person-9",)) != JO

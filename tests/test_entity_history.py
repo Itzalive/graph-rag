@@ -229,3 +229,9 @@ async def test_an_upsert_writes_no_record(make):   # §6: test and eval fixtures
     await _stored(backend, replace(CLUB, seq=4))
     assert (await backend.read_entity("ent-club")).seq == 4
     assert await backend.entity_history("ent-club") == []
+
+
+def test_a_record_keeps_merged_from_only_when_set():   # S7 spec §1.2
+    assert "merged_from" not in entity_after(CLUB)
+    kept = replace(CLUB, merged_from=("ent-gone-2", "ent-gone-1"))
+    assert entity_after(kept)["merged_from"] == ["ent-gone-2", "ent-gone-1"]

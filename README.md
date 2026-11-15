@@ -96,7 +96,7 @@ every call; `InMemoryFactBackend` holds one bucket per instance.
 
 ### Entities
 
-`graph_rag.entities.EntityRecord(entity_id, type, name, handle, aliases, identifiers, seq, version, merged_into)` lives in the same
+`graph_rag.entities.EntityRecord(entity_id, type, name, handle, aliases, identifiers, seq, version, merged_into, merged_from)` lives in the same
 bucket (`doc_type: "entity"`). `handle` is required: the caller's readable id for the entity; it is not an alias key.
 `version` is set by every read (Cosmos: the document's `_etag`; in memory: a counter), moves on every write, is never
 stored and is not part of equality. An entity document without a handle raises
@@ -106,6 +106,8 @@ one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueEr
 (case-insensitive value). Types, handles and ids are the caller's.
 - `merged_into` is the id of the entity this one was merged into; it is stored only when set. What it means to readers
   is the caller's.
+- `merged_from` (0.8.0) is the ids of the entities merged into this one, in the caller's order; it is stored only when
+  non-empty and a document without it reads as `()`. What it means to readers is the caller's.
 - `find_by_aliases(keys, *, limit=50)` returns entities of any type whose name or aliases match one of `keys`, in one
   query. Keys are folded as `find_by_alias` folds them, empty ones dropped and repeats removed in the caller's order;
   past 300 distinct keys only the first 300 are used (`aliases.keys_capped`); no keys returns `[]` without a read. At
@@ -123,7 +125,7 @@ one query, sorted by id, missing ids skipped; at most 200 distinct ids, `ValueEr
 - Entity history (0.5.0): every entity `write_change` creates (written at `seq` 1) or updates (at `seq` plus one), and
   every `replace_entities` update, gets an `EntityChange(entity_id, seq, kind, at, source, after)` in the same batch:
   `kind` `created` or `changed`, `source` and `at` the memory change's (its last) or the ones `replace_entities` was
-  given, `after` the entity's state (type, name, handle, aliases, identifiers, seq, `merged_into` when set). The record
+  given, `after` the entity's state (type, name, handle, aliases, identifiers, seq, `merged_into` when set, `merged_from` when non-empty). The record
   is a document of its own (`doc_type: "entity_change"`, id `entity_change:<entity id>:<seq>`). The backend sets `seq`,
   never the caller; `upsert_entity` stores the `seq` it is given and writes no record.
   `entity_history(entity_id, *, after_seq=-1, limit=100)` returns the records in `seq` order (`limit` 1–500).

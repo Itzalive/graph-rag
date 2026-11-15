@@ -184,13 +184,15 @@ def change_from_state(doc: dict[str, Any]) -> FactChange:
 
 
 def entity_after(entity: EntityRecord) -> dict[str, Any]:
-    """An entity's state as its change record keeps it: no version, no lookup keys; `merged_into` only when set."""
+    """An entity's state as its change record keeps it: no version, no lookup keys; `merged_into` only when set, `merged_from` only when non-empty."""
     state: dict[str, Any] = {"type": entity.type, "name": entity.name, "handle": entity.handle,
                              "aliases": list(entity.aliases),
                              "identifiers": [{"kind": i.kind, "value": i.value} for i in entity.identifiers],
                              "seq": entity.seq}
     if entity.merged_into is not None:
         state["merged_into"] = entity.merged_into
+    if entity.merged_from:
+        state["merged_from"] = list(entity.merged_from)
     return state
 
 

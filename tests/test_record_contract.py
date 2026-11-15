@@ -655,6 +655,17 @@ async def test_merged_into_round_trips(make_backend):   # AC-S1-3
         assert "merged_into" not in make_backend.container.docs[("fam1", "shared", "FACTS", PARK.entity_id)]
 
 
+async def test_merged_from_round_trips_in_order(make_backend):   # AC-S7-6
+    backend = make_backend()
+    kept = replace(BROWNIES, merged_from=("activity-9999", "activity-1111"))
+    await backend.upsert_entity(kept)
+    assert (await backend.read_entity(BROWNIES.entity_id)).merged_from == ("activity-9999", "activity-1111")
+    assert await backend.read_entity(BROWNIES.entity_id) == kept
+    if make_backend.kind == "cosmos":
+        await backend.upsert_entity(PARK)
+        assert "merged_from" not in make_backend.container.docs[("fam1", "shared", "FACTS", PARK.entity_id)]
+
+
 def test_both_backends_are_recorded_backends(make_backend):
     backend = make_backend()
     assert isinstance(backend, RecordedFactBackend)
